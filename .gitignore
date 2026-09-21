@@ -1,0 +1,7 @@
+.env
+
+# Large dataset
+HI-Small_Trans.csv
+# Large preprocessed arrays
+preprocessed/X_train.npy
+preprocessed/X_test.npy

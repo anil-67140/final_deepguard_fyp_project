@@ -1,0 +1,62 @@
+{
+  "architecture": "GINE Multi-GNN, reverse message passing + port numbering, mini-batch neighbour sampling",
+  "edge_numeric_cols": [
+    "Log_Amount_Paid",
+    "Log_Amount_Received",
+    "SignedLog_Amount_Diff",
+    "Hour",
+    "DayOfWeek",
+    "IsWeekend",
+    "IsNightTx",
+    "Log_Port_Number"
+  ],
+  "edge_onehot_cols": [
+    "Payment Format_ACH",
+    "Payment Format_Bitcoin",
+    "Payment Format_Cash",
+    "Payment Format_Cheque",
+    "Payment Format_Credit Card",
+    "Payment Format_Reinvestment",
+    "Payment Format_Wire",
+    "Payment Currency_Australian Dollar",
+    "Payment Currency_Bitcoin",
+    "Payment Currency_Brazil Real",
+    "Payment Currency_Canadian Dollar",
+    "Payment Currency_Euro",
+    "Payment Currency_Mexican Peso",
+    "Payment Currency_Ruble",
+    "Payment Currency_Rupee",
+    "Payment Currency_Saudi Riyal",
+    "Payment Currency_Shekel",
+    "Payment Currency_Swiss Franc",
+    "Payment Currency_UK Pound",
+    "Payment Currency_US Dollar",
+    "Payment Currency_Yen",
+    "Payment Currency_Yuan"
+  ],
+  "edge_extra_flag": "is_reverse (last column)",
+  "hidden_dim": 64,
+  "n_layers": 2,
+  "fanouts": [
+    20,
+    10
+  ],
+  "dropout": 0.2,
+  "threshold": 0.9487646818161011,
+  "test_performance": {
+    "roc_auc": 0.9879736434715852,
+    "avg_prec": 0.5723075730978239,
+    "f1": 0.6011816838995568
+  },
+  "comparison": {
+    "xgboost_roc_auc": 0.9838,
+    "xgboost_avg_prec": 0.5766,
+    "xgboost_f1": 0.6207,
+    "published_multipna_roc_auc_range": [
+      0.982,
+      0.986
+    ],
+    "published_multipna_avg_prec": 0.672,
+    "published_multipna_f1": 0.709
+  }
+}
