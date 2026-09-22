@@ -1,16 +1,17 @@
 # 🛡️ DeepGuard — Complete Setup Guide
-> **Iqra University FYP 2023** | Dr. Dure e Jabeen
+
+> **Iqra University FYP 2023** |
 
 ---
 
 ## ✅ Prerequisites
 
-| Tool | Version | Download |
-|------|---------|----------|
-| Node.js | 18+ | https://nodejs.org |
-| Python | 3.10+ | https://python.org |
+| Tool    | Version    | Download                                       |
+| ------- | ---------- | ---------------------------------------------- |
+| Node.js | 18+        | https://nodejs.org                             |
+| Python  | 3.10+      | https://python.org                             |
 | MongoDB | 7+ (local) | https://www.mongodb.com/try/download/community |
-| Git | any | https://git-scm.com |
+| Git     | any        | https://git-scm.com                            |
 
 ---
 
@@ -65,6 +66,7 @@ VALUES (
 ### STEP 2 — Free AI for Reports (choose ONE)
 
 #### Option A: Groq API (RECOMMENDED — Free, Fast, No credit card)
+
 1. Go to **https://console.groq.com**
 2. Sign up → Create API key (completely free)
 3. Add to `backend-node/.env`:
@@ -73,6 +75,7 @@ VALUES (
    ```
 
 #### Option B: Ollama (100% Local — No internet needed)
+
 1. Download from **https://ollama.ai**
 2. Install and run:
    ```bash
@@ -86,6 +89,7 @@ VALUES (
    ```
 
 #### Option C: OpenAI (Paid — optional)
+
 ```
 OPENAI_API_KEY=sk-your-key-here
 ```
@@ -97,37 +101,49 @@ OPENAI_API_KEY=sk-your-key-here
 ### STEP 3 — Train AI Models (Google Colab)
 
 1. Go to **https://colab.research.google.com**
-2. Upload both notebooks from `notebooks/` folder
-3. Download IBM AML dataset from Kaggle:
+2. Upload the notebooks from `notebooks/` folder to your Google Drive
+3. Download the IBM AML dataset from Kaggle:
    - https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml
-   - Use `HI_Small_Trans.csv` (smaller) or `LI_Small_Trans.csv`
-4. Run **Notebook 1** (`01_EDA_and_Preprocessing.ipynb`) completely
-5. Run **Notebook 2** (`02_Model_Training_and_Evaluation.ipynb`) completely
-6. At the end, a `deepguard_models.zip` will download automatically
-7. Extract and copy contents into `ai-engine/saved_models/`
+   - Use `HI-Small_Trans.csv`
+4. Run **Notebook 1** (`01_EDA_and_Preprocessing.ipynb`) completely — upload the CSV when
+   prompted, it preprocesses and downloads `preprocessed.zip`
+5. Run **Notebook 2** (`02_Model_Training_and_Evaluation.ipynb`) completely — trains
+   Isolation Forest, Autoencoder, and an Optuna-tuned XGBoost, then blends them into an
+   ensemble. Mounts your Google Drive and checkpoints expensive steps (Autoencoder training,
+   the 40-trial hyperparameter search) so a Colab disconnect doesn't cost you a full re-run.
+   Takes 20–30 minutes end to end the first time; seconds on a resumed session.
+6. At the end, `deepguard_improved_models.zip` downloads automatically
+7. _(Optional)_ Run **Notebook 3** (`03_GNN_Model.ipynb`) for a graph-neural-network model
+   trained on the same data. This one is **not yet wired into the live AI engine** — see
+   "Known Limitations" in the root `README.md`. Treat it as a research/comparison result for
+   your report, not something the running app currently uses.
+8. Extract `deepguard_improved_models.zip` and copy its contents into `ai-engine/saved_models/`
 
 ```
 ai-engine/saved_models/
 ├── isolation_forest.pkl
-├── autoencoder.keras
+├── autoencoder.keras   (autoencoder.h5 also included as a fallback)
+├── xgboost_model.json
 ├── scaler.pkl
 ├── feature_cols.pkl
 └── model_metadata.json
 ```
 
-> **Note:** If you skip this step, the AI engine runs in **DEMO MODE** — it still works but uses random predictions. Perfect for testing the UI!
+> **Note:** If you skip this step, the AI engine runs in **DEMO MODE** — it still works but uses random predictions. Perfect for testing the UI! (The repo already ships with trained models in `ai-engine/saved_models/`, so this step is only needed if you want to retrain.)
 
 ---
 
 ### STEP 4 — Configure Environment Variables
 
 #### `ai-engine/.env`
+
 ```env
 MODEL_PATH=./saved_models
 PORT=8000
 ```
 
 #### `backend-node/.env`
+
 ```env
 PORT=4000
 NODE_ENV=development
@@ -142,6 +158,7 @@ GROQ_API_KEY=gsk_your_key_here        # OR
 ```
 
 #### `frontend/.env`
+
 ```env
 VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 VITE_SUPABASE_ANON_KEY=your_anon_key_here
@@ -169,6 +186,7 @@ sudo systemctl start mongod
 ### STEP 6 — Start All Services
 
 #### Option A: One command (recommended)
+
 ```bash
 cd deepguard
 bash start-all.sh
@@ -177,6 +195,7 @@ bash start-all.sh
 #### Option B: Manual (3 separate terminals)
 
 **Terminal 1 — AI Engine**
+
 ```bash
 cd deepguard/ai-engine
 python3 -m venv venv
@@ -186,6 +205,7 @@ uvicorn main:app --reload --port 8000
 ```
 
 **Terminal 2 — Node.js Backend**
+
 ```bash
 cd deepguard/backend-node
 npm install
@@ -193,6 +213,7 @@ npm run dev
 ```
 
 **Terminal 3 — React Frontend**
+
 ```bash
 cd deepguard/frontend
 npm install
@@ -203,14 +224,15 @@ npm run dev
 
 ### STEP 7 — Access the App
 
-| Service | URL |
-|---------|-----|
-| 🌐 Frontend Dashboard | http://localhost:5173 |
-| ⚙️  Backend API | http://localhost:4000/api |
-| 🤖 AI Engine | http://localhost:8000 |
-| 📖 AI API Docs | http://localhost:8000/docs |
+| Service               | URL                        |
+| --------------------- | -------------------------- |
+| 🌐 Frontend Dashboard | http://localhost:5173      |
+| ⚙️ Backend API        | http://localhost:4000/api  |
+| 🤖 AI Engine          | http://localhost:8000      |
+| 📖 AI API Docs        | http://localhost:8000/docs |
 
 **Login credentials (demo):**
+
 - Admin: `admin@deepguard.demo` / `deepguard123`
 - Auditor: `auditor@deepguard.demo` / `deepguard123`
 
@@ -229,14 +251,14 @@ npm run dev
 
 ## 🐛 Common Issues
 
-| Issue | Fix |
-|-------|-----|
-| MongoDB connection error | Make sure MongoDB is running: `mongod --dbpath /data/db` |
-| Supabase auth error | Check SUPABASE_URL and keys in `.env` files |
-| AI Engine 503 | Start `uvicorn main:app --reload` in `ai-engine/` |
-| CORS error | Make sure FRONTEND_URL in backend `.env` matches port 5173 |
-| Port in use | Change PORT in `.env` files |
-| Puppeteer error on PDF | `npm install puppeteer` or use `PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false` |
+| Issue                    | Fix                                                                     |
+| ------------------------ | ----------------------------------------------------------------------- |
+| MongoDB connection error | Make sure MongoDB is running: `mongod --dbpath /data/db`                |
+| Supabase auth error      | Check SUPABASE_URL and keys in `.env` files                             |
+| AI Engine 503            | Start `uvicorn main:app --reload` in `ai-engine/`                       |
+| CORS error               | Make sure FRONTEND_URL in backend `.env` matches port 5173              |
+| Port in use              | Change PORT in `.env` files                                             |
+| Puppeteer error on PDF   | `npm install puppeteer` or use `PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false` |
 
 ---
 
@@ -256,14 +278,17 @@ Trained Models (pkl/keras files)
 
 ## 📊 IBM AML Dataset Info
 
-| File | Size | Transactions |
-|------|------|-------------|
-| HI_Small_Trans.csv | ~200MB | ~5.7M |
-| LI_Small_Trans.csv | ~100MB | ~2.8M |
-| HI_Medium_Trans.csv | ~2GB | ~57M |
+| File                                          | Size                                      | Transactions                          |
+| --------------------------------------------- | ----------------------------------------- | ------------------------------------- |
+| **HI-Small_Trans.csv** (used by this project) | 476 MB                                    | ~5.08M (~0.10% flagged as laundering) |
+| LI-Small_Trans.csv                            | check the Kaggle page — not verified here | —                                     |
+| HI-Medium_Trans.csv                           | check the Kaggle page — not verified here | —                                     |
 
-Start with **HI_Small_Trans.csv** for testing.
+Use **HI-Small_Trans.csv** (note the hyphen — Kaggle's actual filename, not an underscore).
+This is the only file this project's notebooks, `.gitignore`, and the numbers quoted throughout
+this repo assume; the other variants are a different synthetic "world" with different account
+IDs, not just a bigger sample of the same one, so don't mix them with the trained models here.
 
 ---
 
-*DeepGuard — Iqra University CS Batch 2023 | Supervised by Dr. Dure e Jabeen*
+_DeepGuard — Iqra University CS Batch 2023 | Supervised by Dr. Dure e Jabeen_
