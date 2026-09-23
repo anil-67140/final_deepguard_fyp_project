@@ -49,6 +49,8 @@ export const uploadAPI = {
 export const analysisAPI = {
   getJobTransactions: (jobId, params) => api.get(`/analysis/job/${jobId}`, { params }),
   getTransaction:     (txId) => api.get(`/analysis/transaction/${txId}`),
+  exportJob:          (jobId, format = 'csv', filter) =>
+    api.get(`/analysis/job/${jobId}/export`, { params: { format, filter }, responseType: 'blob' }),
 }
 
 export const graphAPI = {
@@ -67,6 +69,16 @@ export const dashboardAPI = {
 export const adminAPI = {
   getAllJobs: () => api.get('/admin/jobs'),
   getStats:  () => api.get('/admin/stats'),
+  // FR-13: Manage Users
+  getUsers:    () => api.get('/admin/users'),
+  createUser:  (payload) => api.post('/admin/users', payload),
+  updateUserRole: (userId, role) => api.patch(`/admin/users/${userId}/role`, { role }),
+  deleteUser:  (userId) => api.delete(`/admin/users/${userId}`),
+  // FR-14: Manage AI Models
+  getModelConfig:    () => api.get('/admin/model-config'),
+  updateModelConfig: (payload) => api.patch('/admin/model-config', payload),
+  // FR-15: System Logs
+  getLogs: (params) => api.get('/admin/logs', { params }),
 }
 
 export default api

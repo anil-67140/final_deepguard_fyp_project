@@ -37,29 +37,31 @@ deepguard/
    - `Project URL` → used as `SUPABASE_URL` / `VITE_SUPABASE_URL`
    - `anon public` key → used as `VITE_SUPABASE_ANON_KEY`
    - `service_role` key → used as `SUPABASE_SERVICE_KEY`
-4. Go to **SQL Editor** → Run this to create demo users:
+4. Create the demo accounts — **do NOT use raw SQL `INSERT INTO auth.users`** (see
+   warning below). Instead, after setting up `backend-node/.env` (Step 3 below), run:
 
-```sql
--- Create demo admin user
-INSERT INTO auth.users (id, email, encrypted_password, email_confirmed_at, raw_user_meta_data)
-VALUES (
-  gen_random_uuid(),
-  'admin@deepguard.demo',
-  crypt('deepguard123', gen_salt('bf')),
-  NOW(),
-  '{"role": "admin"}'::jsonb
-);
-
--- Create demo auditor user
-INSERT INTO auth.users (id, email, encrypted_password, email_confirmed_at, raw_user_meta_data)
-VALUES (
-  gen_random_uuid(),
-  'auditor@deepguard.demo',
-  crypt('deepguard123', gen_salt('bf')),
-  NOW(),
-  '{"role": "auditor"}'::jsonb
-);
+```bash
+cd backend-node
+npm install
+node scripts/create-demo-users.js
 ```
+
+This creates `admin@deepguard.demo` / `auditor@deepguard.demo` (password
+`deepguard123` for both) using Supabase's Admin API, which correctly sets up
+everything a raw SQL insert misses.
+
+> ⚠️ **Why not raw SQL?** An earlier version of this guide had you run
+> `INSERT INTO auth.users (...) VALUES (...)` directly in the SQL Editor. **Don't do
+> this.** Supabase's auth server (GoTrue) requires a matching row in
+> `auth.identities` to log a user in with email+password — a raw `INSERT` into
+> `auth.users` only creates half of what's needed, so `signInWithPassword()` will
+> fail with `"Invalid login credentials"` even though the password hash is
+> technically correct. Always create users via `supabase.auth.admin.createUser()`
+> (the script above), `supabase.auth.signUp()` (your app's own `/api/auth/register`
+> route), or the Supabase Dashboard's **Authentication → Users → Add User** button —
+> all three correctly create the identity row too. If you already ran the broken SQL
+> and users exist but can't log in, delete them (`DELETE FROM auth.users WHERE
+> email IN (...)`) and re-run the script above.
 
 ---
 

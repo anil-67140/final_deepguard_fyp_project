@@ -4,7 +4,7 @@ import { analysisAPI, uploadAPI, reportAPI } from '../utils/api'
 import toast from 'react-hot-toast'
 import {
   Search, Filter, Download, GitBranch, ChevronLeft,
-  Loader2, AlertTriangle, CheckCircle, BarChart3, X
+  Loader2, AlertTriangle, CheckCircle, BarChart3, X, FileDown
 } from 'lucide-react'
 
 const RISK_COLORS = { Critical: '#ef4444', High: '#f59e0b', Medium: '#3b82f6', Low: '#22c55e' }
@@ -108,6 +108,24 @@ export default function AnalysisPage() {
     }
   }
 
+  const [exporting, setExporting] = useState(false)
+  const handleExport = async (format) => {
+    setExporting(true)
+    try {
+      const res = await analysisAPI.exportJob(jobId, format, filter !== 'all' ? filter : undefined)
+      const blob = new Blob([res.data], { type: format === 'csv' ? 'text/csv' : 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `deepguard_export_${jobId}.${format}`; a.click()
+      URL.revokeObjectURL(url)
+      toast.success(`Exported as ${format.toUpperCase()}`)
+    } catch (err) {
+      toast.error('Export failed: ' + err.message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const riskLevelClass = (level) => ({
     Critical: 'badge-critical', High: 'badge-high', Medium: 'badge-medium', Low: 'badge-low'
   })[level] || 'badge-low'
@@ -142,6 +160,17 @@ export default function AnalysisPage() {
             {/* Summary chips */}
             <span className="badge-critical">{j.criticalCount} Critical</span>
             <span className="badge-high">{(j.flaggedCount - j.criticalCount)} High+</span>
+
+            <button onClick={() => handleExport('csv')} disabled={exporting}
+              className="btn-secondary text-xs flex items-center gap-1.5">
+              {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileDown className="w-3 h-3" />}
+              CSV
+            </button>
+            <button onClick={() => handleExport('json')} disabled={exporting}
+              className="btn-secondary text-xs flex items-center gap-1.5">
+              {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileDown className="w-3 h-3" />}
+              JSON
+            </button>
 
             <button onClick={handleDownloadReport} disabled={generatingReport}
               className="btn-primary text-xs flex items-center gap-1.5">

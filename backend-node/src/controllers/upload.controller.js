@@ -63,6 +63,57 @@ function parseIBMAMLRow(row, idx) {
 }
 
 /**
+ * Compute per-account behavioral aggregates (Sender_TX_Count, Sender_Avg_Amount,
+ * Sender_Unique_Receivers, Sender_Total_Amount, Sender_Max_Amount, Receiver_TX_Count)
+ * from the full uploaded batch, and attach them to each transaction before sending
+ * to the AI Engine.
+ *
+ * WHY: main.py's Transaction model defaults these fields to "first-seen account"
+ * values (count=1, avg=amount_paid, etc.) when they aren't supplied, because a
+ * single incoming transaction has no history of its own. But a bulk file upload
+ * *is* a batch of that account's activity, so we can and should compute real
+ * aggregates from it — this was a known gap (every live request silently used
+ * defaults) and materially affects how well Isolation Forest / Autoencoder /
+ * XGBoost can flag velocity-based and layering patterns (Sender_TX_Count,
+ * Sender_Unique_Receivers are two of the model's 21 trained features).
+ *
+ * Note: this reflects the account's activity *within this uploaded file*, not
+ * its full lifetime history (which would require a persistent per-account
+ * running aggregate across jobs — out of scope for a single-batch endpoint).
+ */
+function attachBehavioralAggregates(transactions) {
+  const senderStats = new Map(); // account -> { count, total, max, receivers:Set }
+  const receiverCounts = new Map(); // to_account -> count
+
+  for (const tx of transactions) {
+    if (tx.account) {
+      const s = senderStats.get(tx.account) || { count: 0, total: 0, max: 0, receivers: new Set() };
+      s.count += 1;
+      s.total += tx.amount_paid || 0;
+      s.max = Math.max(s.max, tx.amount_paid || 0);
+      if (tx.to_account) s.receivers.add(tx.to_account);
+      senderStats.set(tx.account, s);
+    }
+    if (tx.to_account) {
+      receiverCounts.set(tx.to_account, (receiverCounts.get(tx.to_account) || 0) + 1);
+    }
+  }
+
+  return transactions.map(tx => {
+    const s = tx.account ? senderStats.get(tx.account) : null;
+    return {
+      ...tx,
+      sender_tx_count: s ? s.count : 1,
+      sender_avg_amount: s ? s.total / s.count : (tx.amount_paid || 0),
+      sender_unique_receivers: s ? s.receivers.size : 1,
+      sender_total_amount: s ? s.total : (tx.amount_paid || 0),
+      sender_max_amount: s ? s.max : (tx.amount_paid || 0),
+      receiver_tx_count: tx.to_account ? (receiverCounts.get(tx.to_account) || 1) : 1
+    };
+  });
+}
+
+/**
  * Parse CSV file
  */
 function parseCSV(filePath) {
@@ -146,7 +197,8 @@ const uploadFile = async (req, res) => {
         rawRows = parseXLSX(filePath);
       }
 
-      const transactions = rawRows.map((row, idx) => parseIBMAMLRow(row, idx));
+      const parsedTransactions = rawRows.map((row, idx) => parseIBMAMLRow(row, idx));
+      const transactions = attachBehavioralAggregates(parsedTransactions);
 
       await Job.findOneAndUpdate({ jobId }, {
         status: 'analyzing',

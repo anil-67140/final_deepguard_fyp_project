@@ -540,3 +540,66 @@ async def model_info():
         "n_features": len(registry.feature_cols),
         "metadata": registry.metadata
     }
+
+
+# ─────────────────────────────────────────────
+# FR-14: Manage AI Models (Admin)
+# Lets an admin view/adjust the ensemble threshold and per-model weights
+# at runtime, without retraining. Changes are held in memory for the life
+# of the process and persisted back to model_metadata.json so they survive
+# a restart. This does NOT retrain any model — it only changes how the
+# already-trained model scores are combined and thresholded.
+# ─────────────────────────────────────────────
+class ModelConfigUpdate(BaseModel):
+    ensemble_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
+    ensemble_weights: Optional[Dict[str, float]] = None
+
+
+@app.get("/models/config")
+async def get_model_config():
+    """Return the currently active, adjustable model configuration."""
+    return {
+        "ensemble_threshold": registry.ensemble_threshold,
+        "ensemble_weights": registry.ensemble_weights,
+        "ae_threshold": registry.ae_threshold,
+    }
+
+
+@app.patch("/models/config")
+async def update_model_config(update: ModelConfigUpdate):
+    """
+    Admin-only in practice (the Node.js gateway's requireAdmin middleware
+    should sit in front of whatever route proxies to this endpoint — the
+    AI engine itself has no auth, matching the rest of this service).
+    """
+    if registry.is_demo_mode():
+        raise HTTPException(status_code=400, detail="Cannot update config in demo mode (no models loaded)")
+
+    if update.ensemble_threshold is not None:
+        registry.ensemble_threshold = update.ensemble_threshold
+        registry.metadata["ensemble_threshold"] = update.ensemble_threshold
+
+    if update.ensemble_weights is not None:
+        total = sum(update.ensemble_weights.values())
+        if abs(total - 1.0) > 0.01:
+            raise HTTPException(status_code=400, detail=f"ensemble_weights must sum to 1.0 (got {total:.3f})")
+        registry.ensemble_weights = update.ensemble_weights
+        registry.metadata["ensemble_weights"] = update.ensemble_weights
+
+    # Persist so the new config survives a restart
+    try:
+        MODEL_PATH = os.getenv("MODEL_PATH", "./saved_models")
+        meta_path = os.path.join(MODEL_PATH, "model_metadata.json")
+        with open(meta_path, "w") as f:
+            json.dump(registry.metadata, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Config updated in memory but failed to persist to disk: {e}")
+
+    logger.info(f"⚙️  Model config updated: threshold={registry.ensemble_threshold:.4f}, "
+                f"weights={registry.ensemble_weights}")
+
+    return {
+        "ensemble_threshold": registry.ensemble_threshold,
+        "ensemble_weights": registry.ensemble_weights,
+        "message": "Configuration updated"
+    }
