@@ -34,6 +34,7 @@ function buildElements(nodes, edges) {
       format: e.format,
       isFraud: e.isFraud,
       riskScore: e.riskScore,
+      fraudCategory: e.fraudCategory,
       label: `$${(e.amount || 0).toLocaleString()}`
     }
   }))
@@ -86,6 +87,10 @@ const CY_STYLE = [
   {
     selector: 'edge[?isFraud]',
     style: { 'line-color': '#ef4444', 'target-arrow-color': '#ef4444', 'width': 2.5 }
+  },
+  {
+    selector: 'edge[fraudCategory = "Circular Transaction"]',
+    style: { 'line-color': '#a855f7', 'target-arrow-color': '#a855f7', 'width': 3, 'line-style': 'dashed' }
   },
   {
     selector: ':selected',
