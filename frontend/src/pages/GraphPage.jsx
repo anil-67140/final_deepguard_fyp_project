@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import CytoscapeComponent from 'react-cytoscapejs'
 import { graphAPI } from '../utils/api'
 import { ChevronLeft, Loader2, ZoomIn, ZoomOut, Maximize2, Info, AlertTriangle } from 'lucide-react'
@@ -95,6 +95,8 @@ const CY_STYLE = [
 
 export default function GraphPage() {
   const { transactionId } = useParams()
+  const [searchParams] = useSearchParams()
+  const jobId = searchParams.get('jobId')
   const navigate = useNavigate()
   const cyRef = useRef(null)
   const [graphData, setGraphData] = useState(null)
@@ -108,7 +110,7 @@ export default function GraphPage() {
   const loadGraph = async () => {
     setLoading(true)
     try {
-      const res = await graphAPI.getTransactionGraph(transactionId, depth)
+      const res = await graphAPI.getTransactionGraph(transactionId, depth, jobId)
       const data = res.data
       setGraphData(data)
       setElements(buildElements(data.nodes || [], data.edges || []))

@@ -8,7 +8,7 @@ const axios = require('axios');
 const Transaction = require('../models/Transaction.model');
 const Job = require('../models/Job.model');
 
-const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://localhost:8000';
+const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
 const BATCH_SIZE = 1000; // Send to AI in chunks
 
 // Multer storage
@@ -60,6 +60,45 @@ function parseIBMAMLRow(row, idx) {
     payment_format: row['Payment Format'] || row['payment_format'] || 'Wire',
     is_laundering: parseInt(row['Is Laundering'] || row['is_laundering'] || 0)
   };
+}
+
+/**
+ * Validate that an uploaded file actually looks like IBM-AML-style transaction
+ * data before we spend any time processing it. Catches the "wrong dataset
+ * entirely" case (e.g. someone uploads a hotel-bookings CSV, a sales CSV, etc.)
+ * up front with a clear, specific error — instead of silently defaulting every
+ * unrecognized column to 0/empty and producing a job that "completes" with
+ * meaningless all-zero transactions.
+ */
+function validateAMLSchema(rawRows) {
+  if (!rawRows || rawRows.length === 0) {
+    return { valid: false, error: 'The file is empty — no rows were found to process.' };
+  }
+
+  const headers = Object.keys(rawRows[0]);
+  const has = (aliases) => aliases.some(a => headers.includes(a));
+
+  const checks = [
+    { label: 'a sender account column', aliases: ['Account', 'account'] },
+    { label: 'a receiver account column', aliases: ['Account.1', 'to_account', 'ToAccount'] },
+    { label: 'an amount column', aliases: ['Amount Paid', 'amount_paid', 'Amount Received', 'amount_received'] },
+  ];
+
+  const missing = checks.filter(c => !has(c.aliases));
+
+  if (missing.length > 0) {
+    const missingLabels = missing.map(m => m.label).join(', ');
+    const foundPreview = headers.slice(0, 8).join(', ') + (headers.length > 8 ? ', …' : '');
+    return {
+      valid: false,
+      error: `This doesn't look like an IBM-AML-style transaction file — missing ${missingLabels}. ` +
+        `Expected columns like "Account", "Account.1", "Amount Paid", "Amount Received", "Payment Format". ` +
+        `Found instead: ${foundPreview}. Make sure you're uploading the transaction dataset ` +
+        `(e.g. HI-Small_Trans.csv), not a different file.`
+    };
+  }
+
+  return { valid: true, error: null };
 }
 
 /**
@@ -160,6 +199,27 @@ const uploadFile = async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
+    const filePath = req.file.path;
+    const ext = path.extname(req.file.originalname).toLowerCase();
+
+    // ── Parse + validate BEFORE creating a job or responding ──
+    // Lets us reject an obviously-wrong file immediately with a clear error,
+    // instead of accepting it, creating a job, and only failing later (or
+    // worse, "succeeding" with meaningless all-default-zero transactions).
+    let rawRows;
+    try {
+      rawRows = ext === '.csv' ? await parseCSV(filePath) : parseXLSX(filePath);
+    } catch (err) {
+      fs.unlink(filePath, () => {});
+      return res.status(400).json({ error: `Could not parse file: ${err.message}` });
+    }
+
+    const schemaCheck = validateAMLSchema(rawRows);
+    if (!schemaCheck.valid) {
+      fs.unlink(filePath, () => {});
+      return res.status(400).json({ error: schemaCheck.error });
+    }
+
     const jobId = uuidv4();
     const io = req.app.get('io');
 
@@ -182,20 +242,11 @@ const uploadFile = async (req, res) => {
     });
 
     // ── Process asynchronously ──
-    const filePath = req.file.path;
     const startTime = Date.now();
 
     try {
-      // ── Parse file ──
+      // ── File already parsed and validated above — build transactions ──
       io?.to(`job_${jobId}`).emit('progress', { jobId, status: 'parsing', progress: 10 });
-      let rawRows = [];
-      const ext = path.extname(req.file.originalname).toLowerCase();
-
-      if (ext === '.csv') {
-        rawRows = await parseCSV(filePath);
-      } else {
-        rawRows = parseXLSX(filePath);
-      }
 
       const parsedTransactions = rawRows.map((row, idx) => parseIBMAMLRow(row, idx));
       const transactions = attachBehavioralAggregates(parsedTransactions);
@@ -262,8 +313,30 @@ const uploadFile = async (req, res) => {
         };
       });
 
-      // Bulk insert (ignore duplicates)
-      await Transaction.insertMany(txDocs, { ordered: false }).catch(() => {});
+      // Bulk insert (ordered:false so one bad doc doesn't block the rest —
+      // but we now actually surface what happened instead of swallowing it)
+      let insertedCount = 0;
+      try {
+        const insertResult = await Transaction.insertMany(txDocs, { ordered: false });
+        insertedCount = insertResult.length;
+        console.log(`✅ Job ${jobId}: inserted ${insertedCount}/${txDocs.length} transactions`);
+      } catch (insertErr) {
+        // insertMany with ordered:false throws a BulkWriteError that still
+        // reports how many succeeded before/around the failures — surface both.
+        insertedCount = insertErr.insertedDocs?.length || insertErr.result?.insertedCount || 0;
+        const sampleError = insertErr.writeErrors?.[0]?.errmsg || insertErr.message;
+        console.error(
+          `⚠️  Job ${jobId}: only ${insertedCount}/${txDocs.length} transactions saved. ` +
+          `First error: ${sampleError}`
+        );
+        // Don't fail the whole job over this — the AI analysis itself succeeded
+        // and the Job-level summary counts are still accurate — but record it
+        // so it's visible in Admin → System Logs instead of vanishing silently.
+        await Job.findOneAndUpdate({ jobId }, {
+          saveWarning: `Only ${insertedCount}/${txDocs.length} transaction records saved. ` +
+            `Analysis/Graph/Report views may be incomplete. Cause: ${sampleError}`
+        });
+      }
 
       // ── Compute summary ──
       const flagged = allResults.filter(r => r.is_fraud);

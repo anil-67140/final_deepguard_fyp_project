@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const TransactionSchema = new mongoose.Schema({
   jobId: { type: String, required: true, index: true },
-  transactionId: { type: String, required: true, unique: true, index: true },
+  transactionId: { type: String, required: true, index: true },
 
   // IBM AML fields
   timestamp: { type: Date, default: Date.now },
@@ -36,5 +36,15 @@ const TransactionSchema = new mongoose.Schema({
 TransactionSchema.index({ account: 1, toAccount: 1 });
 TransactionSchema.index({ jobId: 1, riskScore: -1 });
 TransactionSchema.index({ jobId: 1, isFraud: 1 });
+// Uniqueness is scoped to (jobId, transactionId) rather than transactionId
+// alone — transactionId is often an auto-generated "TX-1, TX-2, ..." sequence
+// (see upload.controller.js's parseIBMAMLRow) when the source file has no
+// real ID column, which is true of the real IBM-AML dataset. A global unique
+// constraint on transactionId meant the SECOND job ever uploaded without a
+// real ID column would collide with the first and silently fail to insert
+// ANY transactions (masked further by upload.controller.js's old
+// `.catch(() => {})`). Scoping to the pair fixes this while still preventing
+// true duplicate rows within the same job.
+TransactionSchema.index({ jobId: 1, transactionId: 1 }, { unique: true });
 
 module.exports = mongoose.model('Transaction', TransactionSchema);

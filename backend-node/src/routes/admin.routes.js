@@ -4,7 +4,7 @@ const { authenticate, requireAdmin, supabase } = require('../middleware/auth.mid
 const Job = require('../models/Job.model');
 const Transaction = require('../models/Transaction.model');
 
-const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://localhost:8000';
+const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
 
 // All jobs (admin only)
 router.get('/jobs', authenticate, requireAdmin, async (req, res) => {

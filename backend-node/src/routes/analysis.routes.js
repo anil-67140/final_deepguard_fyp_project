@@ -34,9 +34,16 @@ router.get('/job/:jobId', authenticate, async (req, res) => {
 });
 
 // Get single transaction with SHAP details
+// jobId is now required as a query param — transactionId is no longer globally
+// unique (see Transaction.model.js), only unique within a job, so a lookup by
+// transactionId alone would be ambiguous once more than one job exists.
 router.get('/transaction/:transactionId', authenticate, async (req, res) => {
   try {
-    const tx = await Transaction.findOne({ transactionId: req.params.transactionId }).lean();
+    const { jobId } = req.query;
+    if (!jobId) {
+      return res.status(400).json({ error: 'jobId query param is required' });
+    }
+    const tx = await Transaction.findOne({ transactionId: req.params.transactionId, jobId }).lean();
     if (!tx) return res.status(404).json({ error: 'Transaction not found' });
     res.json(tx);
   } catch (err) {

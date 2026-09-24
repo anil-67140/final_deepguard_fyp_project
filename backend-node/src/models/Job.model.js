@@ -21,6 +21,7 @@ const JobSchema = new mongoose.Schema({
   averageRiskScore: { type: Number, default: 0 },
   processingTimeMs: { type: Number, default: 0 },
   errorMessage: { type: String },
+  saveWarning: { type: String }, // set if Transaction.insertMany partially/fully failed after a successful AI analysis — see upload.controller.js
   reportUrl: { type: String },
   createdAt: { type: Date, default: Date.now },
   completedAt: { type: Date }

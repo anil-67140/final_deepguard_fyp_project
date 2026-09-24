@@ -247,7 +247,7 @@ export default function AnalysisPage() {
                     <td className="px-4 py-2.5 text-slate-300 max-w-36 truncate">{tx.fraudCategory}</td>
                     <td className="px-4 py-2.5">
                       <button
-                        onClick={(e) => { e.stopPropagation(); navigate(`/graph/${tx.transactionId}`) }}
+                        onClick={(e) => { e.stopPropagation(); navigate(`/graph/${tx.transactionId}?jobId=${jobId}`) }}
                         className="p-1.5 rounded-lg hover:bg-slate-600 text-slate-400 hover:text-sky-400 transition-colors">
                         <GitBranch className="w-3.5 h-3.5" />
                       </button>
@@ -348,7 +348,7 @@ export default function AnalysisPage() {
 
             {/* Graph Button */}
             <button
-              onClick={() => navigate(`/graph/${selectedTx.transactionId}`)}
+              onClick={() => navigate(`/graph/${selectedTx.transactionId}?jobId=${jobId}`)}
               className="btn-secondary w-full flex items-center justify-center gap-2 text-xs">
               <GitBranch className="w-3.5 h-3.5" />
               Trace Network Graph

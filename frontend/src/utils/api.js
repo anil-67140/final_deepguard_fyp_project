@@ -54,7 +54,7 @@ export const analysisAPI = {
 }
 
 export const graphAPI = {
-  getTransactionGraph: (txId, depth = 3) => api.get(`/graph/transaction/${txId}`, { params: { depth } }),
+  getTransactionGraph: (txId, depth = 3, jobId) => api.get(`/graph/transaction/${txId}`, { params: { depth, jobId } }),
   getJobNetworks:      (jobId) => api.get(`/graph/job/${jobId}/networks`),
 }
 
