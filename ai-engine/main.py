@@ -20,6 +20,71 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO, format='%(asctime)s — %(levelname)s — %(message)s')
 logger = logging.getLogger("deepguard-ai")
 
+# ─────────────────────────────────────────────
+# Optional: Graph Neural Network (GNN) scoring
+# ─────────────────────────────────────────────
+# torch + torch_geometric are OPTIONAL. If they aren't installed, or the
+# saved model fails to load for ANY reason, the GNN is simply reported as
+# unavailable (registry.gnn_available = False) everywhere, and the rest of
+# the engine (Isolation Forest + Autoencoder + XGBoost) is completely
+# unaffected — a GNN problem can never take down the core ensemble.
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from torch_geometric.nn import GINEConv
+    TORCH_AVAILABLE = True
+except Exception as e:  # ImportError, or a broken/partial install raising something else
+    TORCH_AVAILABLE = False
+    # A failed import can leave a half-initialised `torch` in sys.modules, and
+    # other libraries (scipy's array-API layer, for one) sniff for it and then
+    # crash on the missing attributes — which would take down the CORE
+    # ensemble too. Scrub anything torch-related so failure stays contained.
+    import sys as _sys
+    for _m in [m for m in list(_sys.modules) if m == "torch" or m.startswith("torch.") or m.startswith("torch_geometric")]:
+        _sys.modules.pop(_m, None)
+    logger.info(f"ℹ️  torch/torch_geometric unavailable ({e}) — GNN scoring disabled, core ensemble unaffected")
+
+if TORCH_AVAILABLE:
+    class MultiGNN(nn.Module):
+        """
+        GINE-based multi-layer GNN with residual connections and an edge
+        classifier head. This reconstruction was verified against the ACTUAL
+        saved weights (saved_models/deepguard_gnn_saved_model/gnn_model.pt)
+        via a strict state_dict load at startup — see ModelRegistry.load_models()
+        — not just against the training notebook, which had drifted from what
+        actually produced that checkpoint (different feature engineering,
+        different n_layers). If this class doesn't match, load_state_dict(strict=True)
+        throws immediately with the exact mismatching layer/shape.
+        """
+        def __init__(self, node_in, edge_in, hidden=64, n_layers=2, dropout=0.2):
+            super().__init__()
+            self.node_proj = nn.Linear(node_in, hidden)
+            self.edge_proj = nn.Linear(edge_in, hidden)
+            self.convs = nn.ModuleList()
+            self.norms = nn.ModuleList()
+            for _ in range(n_layers):
+                mlp = nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, hidden))
+                self.convs.append(GINEConv(mlp, edge_dim=hidden))
+                self.norms.append(nn.BatchNorm1d(hidden))
+            self.dropout = dropout
+            self.edge_mlp = nn.Sequential(
+                nn.Linear(hidden * 3, hidden), nn.ReLU(), nn.Dropout(dropout),
+                nn.Linear(hidden, 1)
+            )
+
+        def forward(self, x, edge_index, edge_attr):
+            h = F.relu(self.node_proj(x))
+            e = F.relu(self.edge_proj(edge_attr))
+            for conv, norm in zip(self.convs, self.norms):
+                h_new = conv(h, edge_index, e)
+                h_new = norm(h_new)
+                h = F.relu(h_new) + h
+                h = F.dropout(h, p=self.dropout, training=self.training)
+            src, dst = edge_index
+            edge_logits = self.edge_mlp(torch.cat([h[src], h[dst], e], dim=1))
+            return edge_logits.squeeze(-1)
+
 app = FastAPI(
     title="DeepGuard AI Engine",
     description="AI-powered financial fraud detection using Isolation Forest + Autoencoder + SHAP",
@@ -109,6 +174,59 @@ class ModelRegistry:
             logger.info(f"✅ Metadata loaded. Ensemble threshold: {self.ensemble_threshold:.4f}  "
                         f"Weights: {self.ensemble_weights}")
 
+            # ── Optional: GNN (see class MultiGNN above for why strict=True matters) ──
+            self.gnn_available = False
+            gnn_path = os.path.join(MODEL_PATH, "deepguard_gnn_saved_model")
+            if not TORCH_AVAILABLE:
+                logger.info("ℹ️  GNN scoring disabled (torch/torch_geometric not installed)")
+            elif not os.path.isdir(gnn_path):
+                logger.info(f"ℹ️  GNN scoring disabled (no model at {gnn_path})")
+            else:
+                try:
+                    with open(os.path.join(gnn_path, "gnn_metadata.json")) as f:
+                        self.gnn_metadata = json.load(f)
+                    self.gnn_edge_num_mean = np.load(os.path.join(gnn_path, "gnn_edge_num_mean.npy"))
+                    self.gnn_edge_num_std = np.load(os.path.join(gnn_path, "gnn_edge_num_std.npy"))
+                    self.gnn_node_feat_mean = np.load(os.path.join(gnn_path, "gnn_node_feat_mean.npy"))
+                    self.gnn_node_feat_std = np.load(os.path.join(gnn_path, "gnn_node_feat_std.npy"))
+
+                    node_in = len(self.gnn_node_feat_mean)
+                    edge_in = (len(self.gnn_metadata["edge_numeric_cols"])
+                               + len(self.gnn_metadata["edge_onehot_cols"]) + 1)  # +1 = is_reverse flag
+                    hidden = self.gnn_metadata.get("hidden_dim", 64)
+                    n_layers = self.gnn_metadata.get("n_layers", 2)
+                    dropout = self.gnn_metadata.get("dropout", 0.2)
+
+                    self.gnn_model = MultiGNN(node_in=node_in, edge_in=edge_in,
+                                               hidden=hidden, n_layers=n_layers, dropout=dropout)
+                    state_dict = torch.load(os.path.join(gnn_path, "gnn_model.pt"), map_location="cpu")
+                    # strict=True IS the verification that this reconstructed
+                    # architecture actually matches the trained checkpoint —
+                    # a mismatch throws here, immediately, naming the exact
+                    # layer/shape at fault, instead of silently producing
+                    # wrong predictions later.
+                    self.gnn_model.load_state_dict(state_dict, strict=True)
+                    self.gnn_model.eval()
+
+                    # Smoke test — tiny synthetic 3-node/2-edge forward pass,
+                    # just to confirm it actually RUNS (dtypes/shapes/ops all
+                    # line up) before trusting it with real traffic.
+                    with torch.no_grad():
+                        test_out = self.gnn_model(
+                            torch.zeros((3, node_in), dtype=torch.float32),
+                            torch.tensor([[0, 1], [1, 2]], dtype=torch.long),
+                            torch.zeros((2, edge_in), dtype=torch.float32),
+                        )
+                        assert test_out.shape == (2,), f"unexpected output shape {tuple(test_out.shape)}"
+
+                    self.gnn_threshold = self.gnn_metadata.get("threshold", 0.5)
+                    self.gnn_available = True
+                    logger.info(f"✅ GNN loaded and smoke-tested (node_in={node_in}, edge_in={edge_in}, "
+                                f"hidden={hidden}, n_layers={n_layers}, threshold={self.gnn_threshold:.4f})")
+                except Exception as e:
+                    logger.warning(f"⚠️  GNN failed to load — GNN scoring disabled, core ensemble unaffected: {e}")
+                    self.gnn_available = False
+
             self._models_loaded = True
 
         except FileNotFoundError as e:
@@ -130,6 +248,7 @@ class ModelRegistry:
             self.ensemble_threshold = 0.5
             self.ensemble_weights = {"xgboost": 0.85, "autoencoder": 0.15, "isolation_forest": 0.0}
             self.if_score_min, self.if_score_max = -0.5, 0.5
+            self.gnn_available = False
             self.metadata = {
                 "model_performance": {
                     "isolation_forest_roc_auc": 0.0,
@@ -142,6 +261,9 @@ class ModelRegistry:
 
     def is_demo_mode(self):
         return self.isolation_forest is None
+
+    def is_gnn_available(self):
+        return getattr(self, "gnn_available", False)
 
 
 registry = ModelRegistry()
@@ -186,10 +308,16 @@ class Transaction(BaseModel):
 class BatchAnalysisRequest(BaseModel):
     transactions: List[Transaction]
     job_id: Optional[str] = None
+    # If true and the GNN is available (see GET /models/gnn/status), each
+    # transaction is also scored by the GNN using this batch's own account
+    # graph, and — if the admin has assigned it a nonzero weight via
+    # PATCH /models/config — blended into the ensemble score too.
+    use_gnn: bool = False
 
 
 class SingleTransactionRequest(BaseModel):
     transaction: Transaction
+    use_gnn: bool = False
 
 
 class AnalysisResult(BaseModel):
@@ -200,6 +328,7 @@ class AnalysisResult(BaseModel):
     isolation_forest_score: float
     autoencoder_score: float
     xgboost_score: float
+    gnn_score: Optional[float] = None
     fraud_category: str
     shap_values: Optional[Dict[str, float]] = None
     processing_time_ms: float
@@ -350,12 +479,146 @@ def compute_shap_for_transaction(X_scaled: np.ndarray, feature_cols: list) -> Di
     }
 
 
-def analyze_transactions(transactions: List[Transaction]) -> List[AnalysisResult]:
-    """Core analysis function — runs IF + AE + SHAP."""
+def gnn_predict(transactions: List[Transaction]) -> Optional[np.ndarray]:
+    """
+    Build a small transaction graph from THIS batch (accounts as nodes,
+    transactions as edges) and return a GNN fraud probability (0-1, from
+    sigmoid) for each transaction, in the same order as `transactions`.
+
+    Returns None if the GNN isn't available. Feature engineering here was
+    reverse-engineered from the ACTUAL saved scaler files and
+    gnn_metadata.json (ground truth), not the training notebook, which had
+    drifted from what actually produced the checkpoint — see MultiGNN's
+    docstring and ModelRegistry.load_models() for how the architecture
+    itself is verified.
+
+    Node features (per account, computed from this batch): [out_count,
+    out_sum, out_mean, in_count, in_sum, in_mean] of transaction amounts,
+    log1p'd then standardized. Edge features: 8 standardized numeric columns
+    + one-hot(payment format) + one-hot(currency) + is_reverse flag — the
+    graph includes both forward and reverse copies of every edge, matching
+    training. Port numbering (Nth transaction between this exact sender/
+    receiver pair) is computed within this batch, chronologically — the
+    same "known so far" scoping already used for Sender_TX_Count etc.
+    elsewhere in this engine, just applied to the GNN's own feature set.
+    """
+    if not registry.is_gnn_available() or len(transactions) == 0:
+        return None
+
+    reg = registry
+    numeric_cols = reg.gnn_metadata["edge_numeric_cols"]
+    onehot_cols = reg.gnn_metadata["edge_onehot_cols"]
+
+    def parse_ts(tx):
+        try:
+            return pd.to_datetime(tx.timestamp) if tx.timestamp else pd.Timestamp.now()
+        except Exception:
+            return pd.Timestamp.now()
+
+    # ── Account -> node index ──
+    acct_to_idx: Dict[str, int] = {}
+    def get_idx(acct):
+        acct = acct or "UNKNOWN"
+        if acct not in acct_to_idx:
+            acct_to_idx[acct] = len(acct_to_idx)
+        return acct_to_idx[acct]
+
+    for tx in transactions:
+        get_idx(tx.account)
+        get_idx(tx.to_account)
+    n_nodes = len(acct_to_idx)
+
+    # ── Port numbering: prior tx count for this (sender, receiver) pair,
+    #    computed in chronological order within this batch ──
+    order = sorted(range(len(transactions)), key=lambda i: parse_ts(transactions[i]))
+    pair_counts: Dict[tuple, int] = {}
+    port_number = [0] * len(transactions)
+    for i in order:
+        tx = transactions[i]
+        key = (tx.account, tx.to_account)
+        port_number[i] = pair_counts.get(key, 0)
+        pair_counts[key] = port_number[i] + 1
+
+    # ── Node features: out/in degree stats over this batch ──
+    out_count = np.zeros(n_nodes); out_sum = np.zeros(n_nodes)
+    in_count = np.zeros(n_nodes); in_sum = np.zeros(n_nodes)
+    for tx in transactions:
+        s, d = get_idx(tx.account), get_idx(tx.to_account)
+        out_count[s] += 1; out_sum[s] += tx.amount_paid
+        in_count[d] += 1; in_sum[d] += tx.amount_received
+    out_mean = np.divide(out_sum, out_count, out=np.zeros_like(out_sum), where=out_count > 0)
+    in_mean = np.divide(in_sum, in_count, out=np.zeros_like(in_sum), where=in_count > 0)
+    node_feat_raw = np.stack([out_count, out_sum, out_mean, in_count, in_sum, in_mean], axis=1)
+    node_feat = (np.log1p(node_feat_raw) - reg.gnn_node_feat_mean) / reg.gnn_node_feat_std
+
+    # ── Edge features (built in original transaction order) ──
+    src, dst, numeric_rows, onehot_rows = [], [], [], []
+    for i, tx in enumerate(transactions):
+        src.append(get_idx(tx.account)); dst.append(get_idx(tx.to_account))
+
+        ts = parse_ts(tx)
+        amount_paid, amount_received = float(tx.amount_paid), float(tx.amount_received)
+        diff = amount_paid - amount_received
+        signed_log_diff = float(np.sign(diff) * np.log1p(abs(diff)))
+
+        feat_map = {
+            "Log_Amount_Paid": np.log1p(amount_paid),
+            "Log_Amount_Received": np.log1p(amount_received),
+            "SignedLog_Amount_Diff": signed_log_diff,
+            "Hour": float(ts.hour),
+            "DayOfWeek": float(ts.dayofweek),
+            "IsWeekend": 1.0 if ts.dayofweek >= 5 else 0.0,
+            "IsNightTx": 1.0 if (ts.hour >= 22 or ts.hour <= 5) else 0.0,
+            "Log_Port_Number": float(np.log1p(port_number[i])),
+        }
+        numeric_rows.append([feat_map[c] for c in numeric_cols])
+
+        pf, cur = tx.payment_format or "Wire", tx.payment_currency or "US Dollar"
+        onehot_rows.append([
+            1.0 if (col == f"Payment Format_{pf}" or col == f"Payment Currency_{cur}") else 0.0
+            for col in onehot_cols
+        ])
+
+    numeric_arr = (np.array(numeric_rows, dtype=np.float32) - reg.gnn_edge_num_mean) / reg.gnn_edge_num_std
+    onehot_arr = np.array(onehot_rows, dtype=np.float32)
+    src, dst = np.array(src), np.array(dst)
+    n_edges = len(transactions)
+
+    edge_index = np.concatenate([np.stack([src, dst]), np.stack([dst, src])], axis=1)
+    edge_feat_fwd = np.concatenate([numeric_arr, onehot_arr, np.zeros((n_edges, 1), dtype=np.float32)], axis=1)
+    edge_feat_rev = np.concatenate([numeric_arr, onehot_arr, np.ones((n_edges, 1), dtype=np.float32)], axis=1)
+    edge_attr = np.concatenate([edge_feat_fwd, edge_feat_rev], axis=0)
+
+    with torch.no_grad():
+        logits = reg.gnn_model(
+            torch.tensor(node_feat, dtype=torch.float32),
+            torch.tensor(edge_index, dtype=torch.long),
+            torch.tensor(edge_attr, dtype=torch.float32),
+        )
+        probs = torch.sigmoid(logits).cpu().numpy()
+
+    # Edges were appended in original transaction order, so the first n_edges
+    # entries (the forward half) already line up 1:1 with `transactions`.
+    return probs[:n_edges]
+
+
+def analyze_transactions(transactions: List[Transaction], use_gnn: bool = False) -> List[AnalysisResult]:
+    """Core analysis function — runs IF + AE + XGBoost (+ optional GNN) + SHAP."""
     start = time.time()
 
     # Feature engineering
     X_raw = engineer_features(transactions)
+
+    # ── Optional GNN pass — built from this batch's own account graph.
+    # Never allowed to break the core ensemble: any failure here just means
+    # gnn_scores stays None and every transaction gets gnn_score=None. ──
+    gnn_scores = None
+    if use_gnn and registry.is_gnn_available():
+        try:
+            gnn_scores = gnn_predict(transactions)
+        except Exception as e:
+            logger.warning(f"GNN scoring failed for this batch (falling back to core ensemble only): {e}")
+            gnn_scores = None
 
     if not registry.is_demo_mode():
         # Scale (using the *same* fitted scaler + column order used at training time)
@@ -389,12 +652,24 @@ def analyze_transactions(transactions: List[Transaction]) -> List[AnalysisResult
 
     # Ensemble — weights come from model_metadata.json (data-driven, tuned on
     # a held-out validation split during training; see saved_models/README).
+    # Always renormalize by whichever weights actually contributed: if the
+    # admin has configured a nonzero "gnn" weight (as part of a set that
+    # sums to 1.0) but this particular request didn't run the GNN (use_gnn
+    # =False, or it's unavailable), dividing only by the weights that DID
+    # run keeps the score on the same 0-1 scale instead of silently
+    # compressing every score toward zero by the missing GNN share.
     w = registry.ensemble_weights
+    used_weight = w.get("xgboost", 0.85) + w.get("autoencoder", 0.15) + w.get("isolation_forest", 0.0)
     ensemble_scores = (
         w.get("xgboost", 0.85) * xgb_normalized
         + w.get("autoencoder", 0.15) * ae_normalized
         + w.get("isolation_forest", 0.0) * if_normalized
     )
+    if gnn_scores is not None and w.get("gnn", 0.0) > 0:
+        ensemble_scores = ensemble_scores + w.get("gnn", 0.0) * gnn_scores
+        used_weight += w.get("gnn", 0.0)
+    if used_weight > 0:
+        ensemble_scores = ensemble_scores / used_weight
     threshold = registry.ensemble_threshold
 
     results = []
@@ -436,6 +711,7 @@ def analyze_transactions(transactions: List[Transaction]) -> List[AnalysisResult
             isolation_forest_score=round(float(if_normalized[i]) * 100, 2),
             autoencoder_score=round(float(ae_normalized[i]) * 100, 2),
             xgboost_score=round(float(xgb_normalized[i]) * 100, 2),
+            gnn_score=round(float(gnn_scores[i]) * 100, 2) if gnn_scores is not None else None,
             fraud_category=category,
             shap_values=shap_vals,
             processing_time_ms=round(proc_ms, 2)
@@ -467,7 +743,8 @@ async def health():
         "models": {
             "isolation_forest": not registry.is_demo_mode(),
             "autoencoder": not registry.is_demo_mode(),
-            "scaler": not registry.is_demo_mode()
+            "scaler": not registry.is_demo_mode(),
+            "gnn": registry.is_gnn_available()
         },
         "demo_mode": registry.is_demo_mode(),
         "performance": registry.metadata.get("model_performance", {})
@@ -490,7 +767,7 @@ async def analyze_batch(request: BatchAnalysisRequest):
     logger.info(f"📥 Batch analysis: {len(request.transactions)} transactions | Job: {request.job_id}")
 
     try:
-        results = analyze_transactions(request.transactions)
+        results = analyze_transactions(request.transactions, use_gnn=request.use_gnn)
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -520,7 +797,7 @@ async def analyze_batch(request: BatchAnalysisRequest):
 async def analyze_single(request: SingleTransactionRequest):
     """Analyze a single transaction with full SHAP explanation."""
     try:
-        results = analyze_transactions([request.transaction])
+        results = analyze_transactions([request.transaction], use_gnn=request.use_gnn)
         result = results[0]
         # Always compute SHAP for single analysis
         X_raw = engineer_features([request.transaction])
@@ -534,11 +811,104 @@ async def analyze_single(request: SingleTransactionRequest):
 @app.get("/models/info")
 async def model_info():
     """Return model metadata and performance metrics."""
-    return {
+    info = {
         "demo_mode": registry.is_demo_mode(),
         "features": registry.feature_cols,
         "n_features": len(registry.feature_cols),
-        "metadata": registry.metadata
+        "metadata": registry.metadata,
+        "gnn_available": registry.is_gnn_available()
+    }
+    if registry.is_gnn_available():
+        info["gnn_metadata"] = registry.gnn_metadata
+    return info
+
+
+@app.get("/models/gnn/status")
+async def gnn_status():
+    """
+    Dedicated GNN diagnostic endpoint. Use this to check whether the GNN
+    actually loaded and passed its startup smoke test, and why not if it
+    didn't — check the AI Engine's own console/logs at startup for the
+    specific warning (import error, missing files, or a state_dict shape
+    mismatch naming the exact layer at fault) if `available` is false here.
+    """
+    if not registry.is_gnn_available():
+        return {
+            "available": False,
+            "torch_installed": TORCH_AVAILABLE,
+            "reason": "See AI Engine startup logs for the specific error."
+        }
+    return {
+        "available": True,
+        "architecture": registry.gnn_metadata.get("architecture"),
+        "hidden_dim": registry.gnn_metadata.get("hidden_dim"),
+        "n_layers": registry.gnn_metadata.get("n_layers"),
+        "threshold": registry.gnn_threshold,
+        "edge_feature_count": (len(registry.gnn_metadata["edge_numeric_cols"])
+                                + len(registry.gnn_metadata["edge_onehot_cols"]) + 1),
+        "node_feature_count": len(registry.gnn_node_feat_mean),
+        "test_performance": registry.gnn_metadata.get("test_performance"),
+        "comparison": registry.gnn_metadata.get("comparison"),
+    }
+
+
+class GnnAnalysisRequest(BaseModel):
+    transactions: List[Transaction]
+    job_id: Optional[str] = None
+
+
+@app.post("/analyze/gnn", response_model=Dict[str, Any])
+async def analyze_gnn(request: GnnAnalysisRequest):
+    """
+    Score a batch using ONLY the GNN (built from this batch's own account
+    graph), independent of the Isolation Forest/Autoencoder/XGBoost ensemble.
+    Useful to inspect the GNN's own opinion directly, e.g. for a side-by-side
+    comparison in the report or admin panel, or when the FYP defense
+    specifically wants to demonstrate GNN-based detection on its own merits.
+    For a blended score, use POST /analyze/batch with "use_gnn": true instead.
+    """
+    if not registry.is_gnn_available():
+        raise HTTPException(status_code=503, detail="GNN is not available — check GET /models/gnn/status")
+    if len(request.transactions) == 0:
+        raise HTTPException(status_code=400, detail="No transactions provided")
+    if len(request.transactions) > 20000:
+        raise HTTPException(status_code=400, detail="Max 20,000 transactions per GNN batch "
+                                                      "(the whole batch forms one in-memory graph)")
+
+    start = time.time()
+    try:
+        scores = gnn_predict(request.transactions)
+    except Exception as e:
+        logger.error(f"GNN analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    threshold = registry.gnn_threshold
+    results = []
+    for i, tx in enumerate(request.transactions):
+        score = float(scores[i])
+        is_fraud = score >= threshold
+        results.append({
+            "transaction_id": tx.transaction_id or f"TX-{i+1:05d}",
+            "gnn_score": round(score * 100, 2),
+            "is_fraud": is_fraud,
+            "risk_level": "Critical" if score >= max(threshold * 1.05, threshold) and is_fraud else
+                          ("High" if is_fraud else ("Medium" if score >= threshold * 0.5 else "Low")),
+        })
+
+    flagged = [r for r in results if r["is_fraud"]]
+    return {
+        "job_id": request.job_id,
+        "status": "completed",
+        "model": "GNN (GINE-based, graph built from this batch)",
+        "threshold": threshold,
+        "summary": {
+            "total_transactions": len(results),
+            "flagged_count": len(flagged),
+            "flagging_rate_pct": round(len(flagged) / max(len(results), 1) * 100, 2),
+            "processing_time_ms": round((time.time() - start) * 1000, 2),
+        },
+        "results": results,
+        "timestamp": datetime.utcnow().isoformat()
     }
 
 
@@ -562,6 +932,7 @@ async def get_model_config():
         "ensemble_threshold": registry.ensemble_threshold,
         "ensemble_weights": registry.ensemble_weights,
         "ae_threshold": registry.ae_threshold,
+        "gnn_available": registry.is_gnn_available(),
     }
 
 

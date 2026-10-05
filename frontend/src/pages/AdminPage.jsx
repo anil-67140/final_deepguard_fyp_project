@@ -3,7 +3,8 @@ import { adminAPI } from '../utils/api'
 import toast from 'react-hot-toast'
 import {
   Users, Database, Activity, Shield, Loader2, Trash2, Save,
-  Sliders, ScrollText, LayoutGrid, UserPlus
+  Sliders, ScrollText, LayoutGrid, UserPlus, Network, ListOrdered,
+  Download, RotateCcw
 } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 
@@ -11,6 +12,8 @@ const TABS = [
   { id: 'overview', label: 'Overview',   icon: LayoutGrid },
   { id: 'users',    label: 'Users',      icon: Users },
   { id: 'models',   label: 'AI Models',  icon: Sliders },
+  { id: 'queue',    label: 'Queue',      icon: ListOrdered },
+  { id: 'backups',  label: 'Backups',    icon: Database },
   { id: 'logs',     label: 'System Logs', icon: ScrollText },
 ]
 
@@ -38,6 +41,8 @@ export default function AdminPage() {
       {tab === 'overview' && <OverviewTab />}
       {tab === 'users'    && <UsersTab />}
       {tab === 'models'   && <ModelsTab />}
+      {tab === 'queue'    && <QueueTab />}
+      {tab === 'backups'  && <BackupsTab />}
       {tab === 'logs'     && <LogsTab />}
     </div>
   )
@@ -314,6 +319,8 @@ function ModelsTab() {
   const [error, setError] = useState(null)
   const [threshold, setThreshold] = useState(0.3)
   const [weights, setWeights] = useState({ xgboost: 0.85, autoencoder: 0.15, isolation_forest: 0 })
+  const [gnnStatus, setGnnStatus] = useState(null)
+  const [gnnLoading, setGnnLoading] = useState(true)
 
   useEffect(() => {
     adminAPI.getModelConfig()
@@ -325,6 +332,11 @@ function ModelsTab() {
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
+
+    adminAPI.getGnnStatus()
+      .then(r => setGnnStatus(r.data))
+      .catch(() => setGnnStatus({ available: false }))
+      .finally(() => setGnnLoading(false))
   }, [])
 
   const weightSum = Object.values(weights).reduce((a, b) => a + Number(b || 0), 0)
@@ -357,6 +369,24 @@ function ModelsTab() {
     } finally {
       setSaving(false)
     }
+  }
+
+  const toggleGnnWeight = (enable) => {
+    setWeights(w => {
+      const next = { ...w }
+      if (enable) {
+        // Carve out 20% for the GNN from xgboost's share, rather than just
+        // appending a weight that would push the sum above 1.0 and force
+        // the admin to manually rebalance everything before they can save.
+        const take = Math.min(0.2, Number(next.xgboost || 0))
+        next.xgboost = Number((Number(next.xgboost || 0) - take).toFixed(2))
+        next.gnn = take
+      } else {
+        next.xgboost = Number((Number(next.xgboost || 0) + Number(next.gnn || 0)).toFixed(2))
+        delete next.gnn
+      }
+      return next
+    })
   }
 
   if (loading) return <div className="flex items-center justify-center h-40"><Loader2 className="w-7 h-7 text-sky-400 animate-spin" /></div>
@@ -409,11 +439,89 @@ function ModelsTab() {
             </div>
           ))}
         </div>
+        {gnnStatus?.available && !('gnn' in weights) && (
+          <button onClick={() => toggleGnnWeight(true)} className="btn-secondary text-xs mt-3 flex items-center gap-1.5">
+            <Network className="w-3 h-3" /> Add GNN to the ensemble
+          </button>
+        )}
+        {'gnn' in weights && (
+          <button onClick={() => toggleGnnWeight(false)} className="text-xs text-slate-500 hover:text-red-400 mt-2 underline">
+            Remove GNN from the ensemble
+          </button>
+        )}
         <button onClick={handleSaveWeights} disabled={saving}
           className="btn-primary text-xs flex items-center gap-1.5 mt-4">
           {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
           Save Weights
         </button>
+        {'gnn' in weights && (
+          <p className="text-xs text-slate-500 mt-2">
+            A "gnn" weight here only takes effect for jobs uploaded with the GNN option checked
+            (Upload page) — it has no effect on jobs that didn't request it.
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+            <Network className="w-4 h-4 text-purple-400" /> Graph Neural Network (GNN)
+          </h3>
+          {!gnnLoading && (
+            <span className={`px-2 py-0.5 rounded-full text-xs font-semibold
+              ${gnnStatus?.available ? 'bg-purple-500/10 text-purple-300' : 'bg-slate-700 text-slate-400'}`}>
+              {gnnStatus?.available ? 'Available' : 'Not installed'}
+            </span>
+          )}
+        </div>
+
+        {gnnLoading ? (
+          <Loader2 className="w-4 h-4 text-slate-500 animate-spin mt-2" />
+        ) : gnnStatus?.available ? (
+          <div className="space-y-3 mt-3">
+            <p className="text-xs text-slate-400">
+              A GINE-based graph neural network, trained separately from the core ensemble, that
+              scores transactions using the account-connection graph rather than per-transaction
+              features alone. Selectable per-upload from the Upload page, or blended into the
+              ensemble above.
+            </p>
+            <div className="grid grid-cols-2 gap-3 max-w-md">
+              {[
+                ['Architecture', gnnStatus.architecture || 'GINE'],
+                ['Layers', gnnStatus.n_layers],
+                ['Hidden dim', gnnStatus.hidden_dim],
+                ['Decision threshold', gnnStatus.threshold?.toFixed(4)],
+                ['Edge features', gnnStatus.edge_feature_count],
+                ['Node features', gnnStatus.node_feature_count],
+              ].map(([label, value]) => (
+                <div key={label} className="flex justify-between text-xs bg-slate-800/50 rounded-lg px-3 py-2">
+                  <span className="text-slate-400">{label}</span>
+                  <span className="text-slate-200 font-medium">{value ?? '—'}</span>
+                </div>
+              ))}
+            </div>
+            {gnnStatus.test_performance && (
+              <div className="text-xs text-slate-500">
+                Test performance (from training): {Object.entries(gnnStatus.test_performance)
+                  .map(([k, v]) => `${k}=${typeof v === 'number' ? v.toFixed(4) : v}`).join(', ')}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="mt-3 bg-slate-800/50 rounded-lg p-3 space-y-2">
+            <p className="text-xs text-slate-400">
+              The GNN isn't loaded on the AI Engine right now — the rest of the platform (Isolation
+              Forest + Autoencoder + XGBoost) is completely unaffected by this.
+            </p>
+            <p className="text-xs text-slate-500">To enable it, on the machine running the AI Engine:</p>
+            <pre className="text-xs bg-slate-950 rounded-lg p-2 text-slate-300 overflow-x-auto">pip install torch==2.2.2 torch_geometric==2.5.3</pre>
+            <p className="text-xs text-slate-500">
+              then restart the AI Engine and check its startup log for a line starting "✅ GNN
+              loaded" (or a specific error if the reconstructed architecture didn't match the
+              saved weights).
+            </p>
+          </div>
+        )}
       </div>
 
       {config?.model_performance && (
@@ -422,6 +530,183 @@ function ModelsTab() {
           <p className="text-xs text-slate-500">See saved_models/model_metadata.json for full evaluation metrics.</p>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// FR-18: Bulk Processing Queue
+// ─────────────────────────────────────────────
+function QueueTab() {
+  const [status, setStatus] = useState(null)
+  const [error, setError] = useState(null)
+
+  const load = () => adminAPI.getQueueStatus().then(r => { setStatus(r.data); setError(null) }).catch(e => setError(e.message))
+
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 4000) // live-ish view without needing a websocket
+    return () => clearInterval(t)
+  }, [])
+
+  if (error) return <div className="card"><p className="text-xs text-amber-300">Could not reach the backend: {error}</p></div>
+  if (!status) return <div className="flex items-center justify-center h-40"><Loader2 className="w-7 h-7 text-sky-400 animate-spin" /></div>
+
+  const cards = [
+    { label: 'Waiting', value: status.waiting, color: 'amber' },
+    { label: 'Active', value: status.active, color: 'sky' },
+    { label: 'Completed', value: status.completed, color: 'green' },
+    { label: 'Failed', value: status.failed, color: 'red' },
+  ]
+
+  return (
+    <div className="space-y-6">
+      <div className="card flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-white">Upload Processing Queue</h3>
+          <p className="text-xs text-slate-400 mt-1">
+            Backed by <b className="text-slate-300">{status.mode === 'redis' ? 'Redis (Bull)' : 'in-process memory'}</b>,
+            concurrency {status.concurrency} — {status.concurrency} file{status.concurrency === 1 ? '' : 's'} can be analyzed at once,
+            the rest wait their turn automatically.
+          </p>
+        </div>
+        {status.mode !== 'redis' && (
+          <span className="text-xs text-amber-300 bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-1.5 max-w-xs">
+            Set <code className="font-mono">REDIS_URL</code> in the backend's .env for a persistent,
+            Redis-backed queue. Works fine without it for typical use.
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {cards.map(({ label, value, color }) => (
+          <div key={label} className="card text-center">
+            <p className={`text-3xl font-bold ${
+              color === 'amber' ? 'text-amber-400' : color === 'sky' ? 'text-sky-400' :
+              color === 'green' ? 'text-green-400' : 'text-red-400'}`}>{value ?? 0}</p>
+            <p className="text-xs text-slate-400 mt-1">{label}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// FR-20: Data Backup and Recovery
+// ─────────────────────────────────────────────
+function BackupsTab() {
+  const [backups, setBackups] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [running, setRunning] = useState(false)
+  const [busyName, setBusyName] = useState(null)
+  const [error, setError] = useState(null)
+
+  const load = () => adminAPI.getBackups().then(r => { setBackups(r.data); setError(null) }).catch(e => setError(e.message)).finally(() => setLoading(false))
+  useEffect(load, [])
+
+  const handleRun = async () => {
+    setRunning(true)
+    try {
+      await adminAPI.runBackup()
+      toast.success('Backup created')
+      load()
+    } catch (err) {
+      toast.error('Backup failed: ' + (err.response?.data?.error || err.message))
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const handleRestore = async (name) => {
+    if (!window.confirm(`Restore "${name}"? Existing records with matching IDs will be overwritten. Nothing is deleted.`)) return
+    setBusyName(name)
+    try {
+      const res = await adminAPI.restoreBackup(name)
+      toast.success(`Restored: ${JSON.stringify(res.data.restored)}`)
+    } catch (err) {
+      toast.error('Restore failed: ' + (err.response?.data?.error || err.message))
+    } finally {
+      setBusyName(null)
+    }
+  }
+
+  const handleDownload = async (name) => {
+    try {
+      const res = await adminAPI.downloadBackup(name)
+      const url = URL.createObjectURL(new Blob([res.data]))
+      const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url)
+    } catch (err) {
+      toast.error('Download failed: ' + (err.response?.data?.error || err.message))
+    }
+  }
+
+  const handleDelete = async (name) => {
+    if (!window.confirm(`Delete backup "${name}"? This cannot be undone.`)) return
+    try {
+      await adminAPI.deleteBackup(name)
+      setBackups(prev => prev.filter(b => b.name !== name))
+    } catch (err) {
+      toast.error('Delete failed: ' + (err.response?.data?.error || err.message))
+    }
+  }
+
+  if (loading) return <div className="flex items-center justify-center h-40"><Loader2 className="w-7 h-7 text-sky-400 animate-spin" /></div>
+
+  return (
+    <div className="space-y-4">
+      <div className="card flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-white">Backups</h3>
+          <p className="text-xs text-slate-400 mt-1">
+            Automatic daily backup at 2:00 AM, retained 30 days. Covers all jobs and transaction
+            records — verified for corruption before every restore, and restoring never deletes
+            anything (it only adds/overwrites by ID).
+          </p>
+        </div>
+        <button onClick={handleRun} disabled={running} className="btn-primary text-xs flex items-center gap-1.5 flex-shrink-0">
+          {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <Database className="w-3 h-3" />}
+          Back Up Now
+        </button>
+      </div>
+
+      {error && <div className="card"><p className="text-xs text-amber-300">Could not reach the backend: {error}</p></div>}
+
+      <div className="card">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-slate-700">
+              {['Created', 'Jobs', 'Transactions', 'Size', ''].map(h => (
+                <th key={h} className="text-left px-3 py-2 text-slate-400 font-semibold">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {backups.map(b => (
+              <tr key={b.name} className="border-b border-slate-800/50 hover:bg-slate-800/40">
+                <td className="px-3 py-2 text-slate-200">{formatDistanceToNow(new Date(b.createdAt), { addSuffix: true })}</td>
+                <td className="px-3 py-2 text-slate-300">{b.counts?.jobs ?? '—'}</td>
+                <td className="px-3 py-2 text-slate-300">{b.counts?.transactions ?? '—'}</td>
+                <td className="px-3 py-2 text-slate-400">{(b.size / 1024).toFixed(1)} KB</td>
+                <td className="px-3 py-2">
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => handleDownload(b.name)} title="Download"
+                      className="p-1.5 rounded-lg hover:bg-sky-500/10 text-slate-400 hover:text-sky-400"><Download className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => handleRestore(b.name)} disabled={busyName === b.name} title="Restore"
+                      className="p-1.5 rounded-lg hover:bg-green-500/10 text-slate-400 hover:text-green-400 disabled:opacity-40">
+                      {busyName === b.name ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                    </button>
+                    <button onClick={() => handleDelete(b.name)} title="Delete"
+                      className="p-1.5 rounded-lg hover:bg-red-500/10 text-slate-400 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {backups.length === 0 && (
+              <tr><td colSpan={5} className="px-3 py-8 text-center text-slate-500">No backups yet — click "Back Up Now" or wait for the 2:00 AM schedule.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

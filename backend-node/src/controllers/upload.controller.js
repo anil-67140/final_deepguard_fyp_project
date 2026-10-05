@@ -7,6 +7,8 @@ const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 const Transaction = require('../models/Transaction.model');
 const Job = require('../models/Job.model');
+const { createUploadQueue } = require('../queue/uploadQueue');
+const { notifyJobCompleted, notifyJobFailed } = require('../services/email.service');
 
 const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
 const BATCH_SIZE = 1000; // Send to AI in chunks
@@ -177,17 +179,211 @@ function parseXLSX(filePath) {
 
 /**
  * Send batch to AI Engine
+ * `useGnn` asks the engine to also score with the GNN (silently ignored by
+ * the engine if the GNN isn't installed/loaded — see GET /models/gnn/status).
  */
-async function sendToAIEngine(transactions, jobId) {
+async function sendToAIEngine(transactions, jobId, useGnn = false) {
   const response = await axios.post(`${AI_ENGINE_URL}/analyze/batch`, {
     transactions,
-    job_id: jobId
+    job_id: jobId,
+    use_gnn: !!useGnn
   }, { timeout: 300000 }); // 5 min timeout for large batches
   return response.data;
 }
 
 /**
- * Main upload handler
+ * Read just the first few rows of a file — enough to validate its schema
+ * without parsing the whole thing twice (the queue worker does the full parse).
+ */
+function peekRows(filePath, ext, maxRows = 5) {
+  if (ext !== '.csv') return Promise.resolve(parseXLSX(filePath).slice(0, maxRows));
+  return new Promise((resolve, reject) => {
+    const rows = [];
+    let settled = false;
+    const stream = fs.createReadStream(filePath);
+    const finish = () => { if (settled) return; settled = true; stream.destroy(); resolve(rows.slice(0, maxRows)); };
+    stream.pipe(csv())
+      .on('data', (row) => { if (settled) return; rows.push(row); if (rows.length >= maxRows) finish(); })
+      .on('end', finish)
+      .on('error', (e) => { if (!settled) { settled = true; reject(e); } });
+  });
+}
+
+// ─────────────────────────────────────────────
+// FR-18 — jobs are processed by a bounded-concurrency queue
+// (Redis/Bull if REDIS_URL is reachable, otherwise in-process — see
+// src/queue/uploadQueue.js). Call initUploadQueue(io) once at startup.
+// ─────────────────────────────────────────────
+let uploadQueue = null;
+let ioRef = null;
+
+async function initUploadQueue(io) {
+  ioRef = io;
+  uploadQueue = await createUploadQueue({ processor: processUploadJob });
+  return uploadQueue;
+}
+
+async function getUploadQueue() {
+  if (!uploadQueue) uploadQueue = await createUploadQueue({ processor: processUploadJob });
+  return uploadQueue;
+}
+
+async function getQueueStatus() {
+  return (await getUploadQueue()).getStatus();
+}
+
+/**
+ * The actual analysis pipeline for one job: parse -> aggregate -> AI Engine
+ * (in batches) -> save -> summarise -> notify. Runs inside a queue worker.
+ */
+async function processUploadJob({ jobId, filePath, ext, userEmail, useGnn }) {
+  const io = ioRef;
+  const startTime = Date.now();
+
+  try {
+    await Job.findOneAndUpdate({ jobId }, { status: 'parsing', progress: 8 });
+    io?.to(`job_${jobId}`).emit('progress', { jobId, status: 'parsing', progress: 10 });
+
+    const rawRows = ext === '.csv' ? await parseCSV(filePath) : parseXLSX(filePath);
+    const parsedTransactions = rawRows.map((row, idx) => parseIBMAMLRow(row, idx));
+    const transactions = attachBehavioralAggregates(parsedTransactions);
+
+    await Job.findOneAndUpdate({ jobId }, {
+      status: 'analyzing',
+      progress: 20,
+      totalTransactions: transactions.length
+    });
+
+    io?.to(`job_${jobId}`).emit('progress', {
+      jobId, status: 'analyzing', progress: 20,
+      total: transactions.length
+    });
+
+    // ── Send to AI Engine in batches ──
+    const allResults = [];
+    const totalBatches = Math.ceil(transactions.length / BATCH_SIZE);
+
+    for (let i = 0; i < totalBatches; i++) {
+      const batch = transactions.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE);
+      const response = await sendToAIEngine(batch, jobId, useGnn);
+      allResults.push(...(response.results || []));
+
+      const progress = 20 + Math.round((i + 1) / totalBatches * 50);
+      await Job.findOneAndUpdate({ jobId }, {
+        progress,
+        processedTransactions: allResults.length
+      });
+      io?.to(`job_${jobId}`).emit('progress', {
+        jobId, status: 'analyzing', progress,
+        processed: allResults.length, total: transactions.length
+      });
+    }
+
+    // ── Save results to MongoDB ──
+    await Job.findOneAndUpdate({ jobId }, { status: 'saving', progress: 75 });
+    io?.to(`job_${jobId}`).emit('progress', { jobId, status: 'saving', progress: 75 });
+
+    const txDocs = allResults.map((result, idx) => {
+      const tx = transactions[idx] || {};
+      return {
+        jobId,
+        transactionId: result.transaction_id,
+        timestamp: tx.timestamp ? new Date(tx.timestamp) : new Date(),
+        fromBank: tx.from_bank,
+        account: tx.account,
+        toBank: tx.to_bank,
+        toAccount: tx.to_account,
+        amountPaid: tx.amount_paid,
+        paymentCurrency: tx.payment_currency,
+        amountReceived: tx.amount_received,
+        receivingCurrency: tx.receiving_currency,
+        paymentFormat: tx.payment_format,
+        isLaundering: tx.is_laundering,
+        riskScore: result.risk_score,
+        riskLevel: result.risk_level,
+        isFraud: result.is_fraud,
+        isolationForestScore: result.isolation_forest_score,
+        autoencoderScore: result.autoencoder_score,
+        gnnScore: result.gnn_score ?? null,
+        fraudCategory: result.fraud_category,
+        shapValues: result.shap_values || {},
+        graphLinks: tx.to_account ? [tx.to_account] : []
+      };
+    });
+
+    // Bulk insert (ordered:false so one bad doc doesn't block the rest —
+    // but we surface what happened instead of swallowing it)
+    let insertedCount = 0;
+    try {
+      const insertResult = await Transaction.insertMany(txDocs, { ordered: false });
+      insertedCount = insertResult.length;
+      console.log(`✅ Job ${jobId}: inserted ${insertedCount}/${txDocs.length} transactions`);
+    } catch (insertErr) {
+      insertedCount = insertErr.insertedDocs?.length || insertErr.result?.insertedCount || 0;
+      const sampleError = insertErr.writeErrors?.[0]?.errmsg || insertErr.message;
+      console.error(
+        `⚠️  Job ${jobId}: only ${insertedCount}/${txDocs.length} transactions saved. ` +
+        `First error: ${sampleError}`
+      );
+      await Job.findOneAndUpdate({ jobId }, {
+        saveWarning: `Only ${insertedCount}/${txDocs.length} transaction records saved. ` +
+          `Analysis/Graph/Report views may be incomplete. Cause: ${sampleError}`
+      });
+    }
+
+    // ── Compute summary ──
+    const flagged = allResults.filter(r => r.is_fraud);
+    const critical = allResults.filter(r => r.risk_level === 'Critical');
+    const avgRisk = allResults.reduce((s, r) => s + r.risk_score, 0) / Math.max(allResults.length, 1);
+    const usedGnn = allResults.some(r => r.gnn_score !== null && r.gnn_score !== undefined);
+    const processingTime = Date.now() - startTime;
+
+    const finalJob = await Job.findOneAndUpdate({ jobId }, {
+      status: 'completed',
+      progress: 100,
+      totalTransactions: allResults.length,
+      processedTransactions: allResults.length,
+      flaggedCount: flagged.length,
+      criticalCount: critical.length,
+      cleanCount: allResults.length - flagged.length,
+      averageRiskScore: Math.round(avgRisk * 10) / 10,
+      processingTimeMs: processingTime,
+      usedGnn,
+      completedAt: new Date()
+    }, { new: true }).lean();
+
+    io?.to(`job_${jobId}`).emit('completed', {
+      jobId,
+      status: 'completed',
+      summary: {
+        total: allResults.length,
+        flagged: flagged.length,
+        critical: critical.length,
+        clean: allResults.length - flagged.length,
+        avgRisk: Math.round(avgRisk * 10) / 10,
+        processingTimeMs: processingTime
+      }
+    });
+
+    // FR-19: email leg of the alert (dashboard leg is the socket event above).
+    // notifyJobCompleted never throws and never blocks the job's outcome.
+    await notifyJobCompleted(finalJob, userEmail);
+
+  } catch (err) {
+    console.error(`❌ Job ${jobId} failed:`, err.message);
+    const failedJob = await Job.findOneAndUpdate({ jobId }, {
+      status: 'failed',
+      errorMessage: err.message
+    }, { new: true }).lean();
+    io?.to(`job_${jobId}`).emit('error', { jobId, error: err.message });
+    await notifyJobFailed(failedJob || { jobId, errorMessage: err.message }, userEmail);
+  } finally {
+    fs.unlink(filePath, () => {});
+  }
+}
+
+/**
+ * Main upload handler — validate quickly, create the job, enqueue it, reply.
  */
 const uploadFile = async (req, res) => {
   upload(req, res, async (err) => {
@@ -202,186 +398,56 @@ const uploadFile = async (req, res) => {
     const filePath = req.file.path;
     const ext = path.extname(req.file.originalname).toLowerCase();
 
-    // ── Parse + validate BEFORE creating a job or responding ──
-    // Lets us reject an obviously-wrong file immediately with a clear error,
-    // instead of accepting it, creating a job, and only failing later (or
-    // worse, "succeeding" with meaningless all-default-zero transactions).
-    let rawRows;
+    // ── Validate BEFORE creating a job or responding ──
+    // Reject an obviously-wrong file immediately with a clear error instead
+    // of accepting it and producing meaningless all-default transactions.
+    let sampleRows;
     try {
-      rawRows = ext === '.csv' ? await parseCSV(filePath) : parseXLSX(filePath);
+      sampleRows = await peekRows(filePath, ext);
     } catch (err) {
       fs.unlink(filePath, () => {});
       return res.status(400).json({ error: `Could not parse file: ${err.message}` });
     }
 
-    const schemaCheck = validateAMLSchema(rawRows);
+    const schemaCheck = validateAMLSchema(sampleRows);
     if (!schemaCheck.valid) {
       fs.unlink(filePath, () => {});
       return res.status(400).json({ error: schemaCheck.error });
     }
 
     const jobId = uuidv4();
-    const io = req.app.get('io');
-
-    // Create job record
-    const job = await Job.create({
-      jobId,
-      userId: req.userId,
-      fileName: req.file.filename,
-      originalName: req.file.originalname,
-      fileSize: req.file.size,
-      status: 'parsing',
-      progress: 5
-    });
-
-    // Return immediately with job ID
-    res.status(202).json({
-      jobId,
-      message: 'File received, processing started',
-      status: 'parsing'
-    });
-
-    // ── Process asynchronously ──
-    const startTime = Date.now();
+    const useGnn = String(req.body?.useGnn ?? '').toLowerCase() === 'true';
 
     try {
-      // ── File already parsed and validated above — build transactions ──
-      io?.to(`job_${jobId}`).emit('progress', { jobId, status: 'parsing', progress: 10 });
-
-      const parsedTransactions = rawRows.map((row, idx) => parseIBMAMLRow(row, idx));
-      const transactions = attachBehavioralAggregates(parsedTransactions);
-
-      await Job.findOneAndUpdate({ jobId }, {
-        status: 'analyzing',
-        progress: 20,
-        totalTransactions: transactions.length
-      });
-
-      io?.to(`job_${jobId}`).emit('progress', {
-        jobId, status: 'analyzing', progress: 20,
-        total: transactions.length
-      });
-
-      // ── Send to AI Engine in batches ──
-      const allResults = [];
-      const totalBatches = Math.ceil(transactions.length / BATCH_SIZE);
-
-      for (let i = 0; i < totalBatches; i++) {
-        const batch = transactions.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE);
-        const response = await sendToAIEngine(batch, jobId);
-        allResults.push(...(response.results || []));
-
-        const progress = 20 + Math.round((i + 1) / totalBatches * 50);
-        await Job.findOneAndUpdate({ jobId }, {
-          progress,
-          processedTransactions: allResults.length
-        });
-        io?.to(`job_${jobId}`).emit('progress', {
-          jobId, status: 'analyzing', progress,
-          processed: allResults.length, total: transactions.length
-        });
-      }
-
-      // ── Save results to MongoDB ──
-      await Job.findOneAndUpdate({ jobId }, { status: 'saving', progress: 75 });
-      io?.to(`job_${jobId}`).emit('progress', { jobId, status: 'saving', progress: 75 });
-
-      const txDocs = allResults.map((result, idx) => {
-        const tx = transactions[idx] || {};
-        return {
-          jobId,
-          transactionId: result.transaction_id,
-          timestamp: tx.timestamp ? new Date(tx.timestamp) : new Date(),
-          fromBank: tx.from_bank,
-          account: tx.account,
-          toBank: tx.to_bank,
-          toAccount: tx.to_account,
-          amountPaid: tx.amount_paid,
-          paymentCurrency: tx.payment_currency,
-          amountReceived: tx.amount_received,
-          receivingCurrency: tx.receiving_currency,
-          paymentFormat: tx.payment_format,
-          isLaundering: tx.is_laundering,
-          riskScore: result.risk_score,
-          riskLevel: result.risk_level,
-          isFraud: result.is_fraud,
-          isolationForestScore: result.isolation_forest_score,
-          autoencoderScore: result.autoencoder_score,
-          fraudCategory: result.fraud_category,
-          shapValues: result.shap_values || {},
-          graphLinks: tx.to_account ? [tx.to_account] : []
-        };
-      });
-
-      // Bulk insert (ordered:false so one bad doc doesn't block the rest —
-      // but we now actually surface what happened instead of swallowing it)
-      let insertedCount = 0;
-      try {
-        const insertResult = await Transaction.insertMany(txDocs, { ordered: false });
-        insertedCount = insertResult.length;
-        console.log(`✅ Job ${jobId}: inserted ${insertedCount}/${txDocs.length} transactions`);
-      } catch (insertErr) {
-        // insertMany with ordered:false throws a BulkWriteError that still
-        // reports how many succeeded before/around the failures — surface both.
-        insertedCount = insertErr.insertedDocs?.length || insertErr.result?.insertedCount || 0;
-        const sampleError = insertErr.writeErrors?.[0]?.errmsg || insertErr.message;
-        console.error(
-          `⚠️  Job ${jobId}: only ${insertedCount}/${txDocs.length} transactions saved. ` +
-          `First error: ${sampleError}`
-        );
-        // Don't fail the whole job over this — the AI analysis itself succeeded
-        // and the Job-level summary counts are still accurate — but record it
-        // so it's visible in Admin → System Logs instead of vanishing silently.
-        await Job.findOneAndUpdate({ jobId }, {
-          saveWarning: `Only ${insertedCount}/${txDocs.length} transaction records saved. ` +
-            `Analysis/Graph/Report views may be incomplete. Cause: ${sampleError}`
-        });
-      }
-
-      // ── Compute summary ──
-      const flagged = allResults.filter(r => r.is_fraud);
-      const critical = allResults.filter(r => r.risk_level === 'Critical');
-      const avgRisk = allResults.reduce((s, r) => s + r.risk_score, 0) / Math.max(allResults.length, 1);
-
-      const processingTime = Date.now() - startTime;
-
-      await Job.findOneAndUpdate({ jobId }, {
-        status: 'completed',
-        progress: 100,
-        totalTransactions: allResults.length,
-        processedTransactions: allResults.length,
-        flaggedCount: flagged.length,
-        criticalCount: critical.length,
-        cleanCount: allResults.length - flagged.length,
-        averageRiskScore: Math.round(avgRisk * 10) / 10,
-        processingTimeMs: processingTime,
-        completedAt: new Date()
-      });
-
-      io?.to(`job_${jobId}`).emit('completed', {
+      await Job.create({
         jobId,
-        status: 'completed',
-        summary: {
-          total: allResults.length,
-          flagged: flagged.length,
-          critical: critical.length,
-          clean: allResults.length - flagged.length,
-          avgRisk: Math.round(avgRisk * 10) / 10,
-          processingTimeMs: processingTime
-        }
+        userId: req.userId,
+        fileName: req.file.filename,
+        originalName: req.file.originalname,
+        fileSize: req.file.size,
+        status: 'queued',
+        progress: 2
       });
 
-      // Cleanup uploaded file
-      fs.unlink(filePath, () => {});
-
-    } catch (err) {
-      console.error(`❌ Job ${jobId} failed:`, err.message);
-      await Job.findOneAndUpdate({ jobId }, {
-        status: 'failed',
-        errorMessage: err.message
+      const queue = await getUploadQueue();
+      const { position } = await queue.add({
+        jobId, filePath, ext, userEmail: req.user?.email, useGnn
       });
-      io?.to(`job_${jobId}`).emit('error', { jobId, error: err.message });
+
+      res.status(202).json({
+        jobId,
+        message: position > 1
+          ? `File received — queued (${position - 1} ahead of it)`
+          : 'File received, processing started',
+        status: 'queued',
+        queue: queue.mode,
+        position
+      });
+    } catch (e) {
+      console.error(`❌ Could not enqueue job ${jobId}:`, e.message);
+      await Job.findOneAndUpdate({ jobId }, { status: 'failed', errorMessage: `Could not queue job: ${e.message}` });
       fs.unlink(filePath, () => {});
+      if (!res.headersSent) res.status(500).json({ error: `Could not queue job: ${e.message}` });
     }
   });
 };
@@ -415,4 +481,7 @@ const getUserJobs = async (req, res) => {
   }
 };
 
-module.exports = { uploadFile, getJobStatus, getUserJobs };
+module.exports = {
+  uploadFile, getJobStatus, getUserJobs, initUploadQueue, getQueueStatus,
+  _internals: { processUploadJob, peekRows, validateAMLSchema, parseIBMAMLRow }
+};

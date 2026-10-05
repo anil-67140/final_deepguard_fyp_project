@@ -168,4 +168,69 @@ router.patch('/model-config', authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+// ── FR-18: Queue status (Admin) ──
+router.get('/queue/status', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { getQueueStatus } = require('../controllers/upload.controller');
+    res.json(await getQueueStatus());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── FR-20: Data Backup & Recovery (Admin) ──
+router.get('/backups', authenticate, requireAdmin, (req, res) => {
+  try {
+    res.json(req.app.get('backupService').listBackups());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/backups/run', authenticate, requireAdmin, async (req, res) => {
+  try {
+    res.status(201).json(await req.app.get('backupService').runBackup());
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+router.get('/backups/:name/download', authenticate, requireAdmin, (req, res) => {
+  try {
+    const svc = req.app.get('backupService');
+    svc.verifyBackup(req.params.name)
+      .then(() => res.download(svc.getBackupPath(req.params.name), req.params.name))
+      .catch((err) => res.status(err.status || 500).json({ error: err.message }));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+router.post('/backups/:name/restore', authenticate, requireAdmin, async (req, res) => {
+  try {
+    res.json(await req.app.get('backupService').restoreBackup(req.params.name));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+router.delete('/backups/:name', authenticate, requireAdmin, (req, res) => {
+  try {
+    req.app.get('backupService').deleteBackup(req.params.name);
+    res.json({ message: 'Backup deleted' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// ── GNN status (Admin) — proxies the AI Engine's own diagnostic endpoint ──
+router.get('/gnn/status', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { data } = await axios.get(`${AI_ENGINE_URL}/models/gnn/status`, { timeout: 10000 });
+    res.json(data);
+  } catch (err) {
+    res.status(502).json({ error: 'AI Engine unreachable: ' + err.message });
+  }
+});
+
 module.exports = router;

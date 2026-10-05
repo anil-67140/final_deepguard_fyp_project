@@ -22,6 +22,7 @@ const JobSchema = new mongoose.Schema({
   processingTimeMs: { type: Number, default: 0 },
   errorMessage: { type: String },
   saveWarning: { type: String }, // set if Transaction.insertMany partially/fully failed after a successful AI analysis — see upload.controller.js
+  usedGnn: { type: Boolean, default: false },      // true if the GNN also scored this job
   reportUrl: { type: String },
   createdAt: { type: Date, default: Date.now },
   completedAt: { type: Date }

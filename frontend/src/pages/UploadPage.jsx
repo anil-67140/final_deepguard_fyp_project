@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useDispatch, useSelector } from 'react-redux'
 import { useDropzone } from 'react-dropzone'
 import { io } from 'socket.io-client'
-import { uploadAPI } from '../utils/api'
+import { uploadAPI, adminAPI } from '../utils/api'
 import { addJob, updateJob } from '../store'
 import toast from 'react-hot-toast'
 import {
@@ -47,6 +47,14 @@ export default function UploadPage() {
   const [uploadProgress, setUploadProgress] = useState(0)
   const [localJobs, setLocalJobs] = useState([])
   const [socket, setSocket] = useState(null)
+  const [useGnn, setUseGnn] = useState(false)
+  const [gnnAvailable, setGnnAvailable] = useState(null) // null = still checking
+
+  useEffect(() => {
+    adminAPI.getGnnStatus()
+      .then(r => setGnnAvailable(!!r.data.available))
+      .catch(() => setGnnAvailable(false))
+  }, [])
 
   useEffect(() => {
     loadJobs()
@@ -101,10 +109,11 @@ export default function UploadPage() {
 
     const formData = new FormData()
     formData.append('file', file)
+    formData.append('useGnn', String(useGnn && gnnAvailable))
 
     try {
       const res = await uploadAPI.uploadFile(formData, setUploadProgress)
-      const { jobId } = res.data
+      const { jobId, position, queue } = res.data
 
       const newJob = {
         jobId,
@@ -116,7 +125,11 @@ export default function UploadPage() {
       }
       setLocalJobs(prev => [newJob, ...prev])
       subscribeToJob(jobId, socket)
-      toast.success('File uploaded! Processing started…')
+      toast.success(
+        position > 1
+          ? `File uploaded! ${position - 1} job${position - 1 === 1 ? '' : 's'} ahead in the ${queue === 'redis' ? 'Redis' : ''} queue…`
+          : 'File uploaded! Processing started…'
+      )
 
     } catch (err) {
       toast.error(err.message || 'Upload failed')
@@ -124,7 +137,7 @@ export default function UploadPage() {
       setUploading(false)
       setUploadProgress(0)
     }
-  }, [socket])
+  }, [socket, useGnn, gnnAvailable])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -188,6 +201,29 @@ export default function UploadPage() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* GNN option */}
+      <div className={`flex items-center gap-3 mt-4 p-3 rounded-xl border
+        ${gnnAvailable ? 'border-purple-800/40 bg-purple-950/20' : 'border-slate-700 bg-slate-800/30'}`}>
+        <input
+          type="checkbox"
+          id="useGnn"
+          checked={useGnn && gnnAvailable}
+          disabled={!gnnAvailable || uploading}
+          onChange={(e) => setUseGnn(e.target.checked)}
+          className="w-4 h-4 rounded accent-purple-500 disabled:opacity-40"
+        />
+        <label htmlFor="useGnn" className={`text-sm flex-1 ${gnnAvailable ? 'text-slate-200' : 'text-slate-500'} ${gnnAvailable && !uploading ? 'cursor-pointer' : ''}`}>
+          Also score with the Graph Neural Network
+          <span className="block text-xs text-slate-500 mt-0.5">
+            {gnnAvailable === null
+              ? 'Checking availability…'
+              : gnnAvailable
+                ? 'Builds a transaction graph from this file and adds a GNN fraud probability per transaction, alongside Isolation Forest / Autoencoder / XGBoost.'
+                : 'Not installed on the AI Engine — see Admin → AI Models → GNN, or SETUP_GUIDE.md, to enable it.'}
+          </span>
+        </label>
       </div>
 
       {/* IBM AML Format Hint */}

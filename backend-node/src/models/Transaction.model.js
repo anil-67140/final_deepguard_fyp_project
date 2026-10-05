@@ -23,6 +23,7 @@ const TransactionSchema = new mongoose.Schema({
   isFraud: { type: Boolean, default: false },
   isolationForestScore: { type: Number, default: 0 },
   autoencoderScore: { type: Number, default: 0 },
+  gnnScore: { type: Number, default: null },       // 0-100, only when the job was run with the GNN option
   fraudCategory: { type: String, default: 'Clean' },
   shapValues: { type: mongoose.Schema.Types.Mixed, default: {} },
 

@@ -4,6 +4,7 @@
  */
 
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -20,6 +21,11 @@ const graphRoutes = require('./routes/graph.routes');
 const reportRoutes = require('./routes/report.routes');
 const adminRoutes = require('./routes/admin.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
+
+const { initUploadQueue } = require('./controllers/upload.controller');
+const { createBackupService } = require('./services/backup.service');
+const Job = require('./models/Job.model');
+const Transaction = require('./models/Transaction.model');
 
 const { errorHandler } = require('./middleware/error.middleware');
 
@@ -76,17 +82,34 @@ app.get('/api/health', (req, res) => {
 // ── Error Handler ──
 app.use(errorHandler);
 
+// ── FR-20: Backup service, shared by admin.routes.js and the daily scheduler ──
+const backupService = createBackupService({
+  models: { jobs: Job, transactions: Transaction },
+  dir: process.env.BACKUP_DIR || path.join(__dirname, '../backups'),
+  retentionDays: parseInt(process.env.BACKUP_RETENTION_DAYS || '30', 10),
+});
+app.set('backupService', backupService);
+
 // ── Start Server ──
 const PORT = process.env.PORT || 4000;
 
 async function startServer() {
   try {
     await connectMongoDB();
+
+    // FR-18: queue must exist before the upload route can accept files
+    await initUploadQueue(io);
+
+    // FR-20: daily backups, unless explicitly disabled (e.g. in tests)
+    if (process.env.BACKUP_ENABLED !== 'false') {
+      backupService.startScheduler();
+    }
+
     server.listen(PORT, () => {
       console.log(`\n🚀 DeepGuard Node.js Backend running on port ${PORT}`);
       console.log(`📡 Socket.IO ready`);
       console.log(`🌍 Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
-      console.log(`🤖 AI Engine: ${process.env.AI_ENGINE_URL || 'http://localhost:8000'}\n`);
+      console.log(`🤖 AI Engine: ${process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000'}\n`);
     });
   } catch (err) {
     console.error('❌ Failed to start server:', err);

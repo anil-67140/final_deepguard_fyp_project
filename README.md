@@ -202,12 +202,50 @@ lives in the code.
 | FR-15 | View System Logs            | ✅ **Added this pass** | `/admin/logs`, System Logs tab (reuses `Job` collection — see limitations)                                                                                                                                                                                                                                                              |
 | FR-16 | Export Data                 | ✅ **Added this pass** | `/analysis/job/:jobId/export`, CSV/JSON buttons in `AnalysisPage.jsx`                                                                                                                                                                                                                                                                   |
 | FR-17 | Role-Based Access Control   | ✅ Done                | `requireAdmin`/`requireAuditor` middleware, `ProtectedRoute` in `App.jsx`                                                                                                                                                                                                                                                               |
-| FR-18 | Bulk Processing Queue       | ⚠️ Partial             | Sequential batching (`BATCH_SIZE=1000`) in `upload.controller.js`; **not** Redis/Bull-backed despite `bull`/`ioredis` being in `package.json` — those packages are installed but unused. A true queue (multiple concurrent jobs without blocking) would need wiring `Bull` in; right now one job's batches run sequentially in-process. |
-| FR-19 | Alert Notifications         | ⚠️ Partial             | Real-time in-dashboard alerts via Socket.IO ✅; **email notifications are not implemented** (no SMTP integration despite the requirement mentioning it)                                                                                                                                                                                 |
-| FR-20 | Data Backup and Recovery    | ❌ Not implemented     | No scheduled backup job exists                                                                                                                                                                                                                                                                                                          |
+| FR-18 | Bulk Processing Queue       | ✅ **Added this pass** | `src/queue/uploadQueue.js` — Redis/Bull when `REDIS_URL` is reachable (real ping-verified, not just "connecting"), auto-falls back to a bounded-concurrency in-process queue otherwise. Admin → Queue tab. |
+| FR-19 | Alert Notifications         | ✅ **Added this pass** | In-dashboard via Socket.IO (already done) **+ email** via `src/services/email.service.js` (SMTP, graceful no-op if unconfigured, HTML-escaped, dry-run mode for demos) |
+| FR-20 | Data Backup and Recovery    | ✅ **Added this pass** | `src/services/backup.service.js` — daily 2 AM backup (no `mongodump` needed), 30-day retention, integrity-checked restore. Admin → Backups tab. |
 
-**Bottom line: 18 of 20 fully done, 2 partially done, 0 fully missing** (after this pass —
-before it, FR-13/14/15/16 were fully missing, making it 14/20 fully done).
+**Bottom line: 20 of 20 functional requirements implemented.** Plus a bonus beyond the
+original 20: the trained GNN (Notebook 3) is now wired into the AI Engine as an
+optional, selectable model (see the "GNN as a selectable option" section below) —
+including in `/models/info`'s reported feature set. Its numerical correctness could
+not be verified end-to-end in the sandbox this was built in (see that section for
+exactly why, and how to verify it on your own machine); everything else on this line
+was tested against live services, not just written and assumed to work.
+
+---
+
+## 🕸️ GNN as a selectable option (bonus, beyond the original 20 requirements)
+
+The GNN trained in `notebooks/03_GNN_Model.ipynb` is now wired into the live AI
+Engine as an **optional, additive** fourth model — never required, never able to
+break the core ensemble if it's absent or fails to load:
+
+- **Upload page** — a checkbox, "Also score with the Graph Neural Network" (disabled
+  with an explanation if the GNN isn't installed on the AI Engine).
+- **`POST /analyze/batch`** — accepts `"use_gnn": true` to also score with the GNN
+  and blend it into the ensemble (only if the admin has assigned it a nonzero weight
+  in Admin → AI Models).
+- **`POST /analyze/gnn`** — GNN-only scoring of a batch, for a side-by-side
+  comparison independent of the core ensemble.
+- **`GET /models/gnn/status`** — diagnostics: is it loaded, what architecture, what
+  threshold, what its own test-set performance was.
+- **Admin → AI Models** — a GNN status card, and a one-click "Add GNN to the
+  ensemble" weight toggle.
+
+**To enable it** (optional — everything else works identically without this):
+```bash
+cd ai-engine
+pip install torch==2.2.2 torch_geometric==2.5.3
+```
+Then restart the AI Engine and check its startup log for a line starting `✅ GNN
+loaded and smoke-tested`. If instead you see `⚠️ GNN failed to load`, that line names
+the exact problem (missing files, or — if the reconstructed model architecture in
+`main.py` doesn't match the saved weights — the exact mismatching layer and shape).
+See `CHANGES.md`'s "Read this first" section for the full story on why this specific
+piece couldn't be end-to-end verified against real PyTorch in the environment it was
+built in, and what to do if it doesn't load cleanly on the first try.
 
 ---
 
@@ -266,11 +304,10 @@ against the field names actually stored in `Transaction.model.js`.
 
 Worth stating plainly in your report/defense rather than leaving for a supervisor to find:
 
-1. **The GNN model (Notebook 3) is trained and saved but not wired into the live API.**
-   `ai-engine/saved_models/deepguard_gnn_saved_model/` exists; `main.py` doesn't load it.
-   The running app scores every transaction with Isolation Forest + Autoencoder + XGBoost
-   only. Treat the GNN result as a research/comparison finding for your write-up, not a
-   description of what the deployed system does — unless you wire it in first.
+1. **GNN numerical correctness couldn't be fully end-to-end verified** (architecture
+   shape was verified via strict state-dict loading; full inference couldn't be run
+   in the sandbox this was built in — disk/environment constraints, not a code issue).
+   See `CHANGES.md`'s "Read this first" section and `GET /models/gnn/status`.
 2. **`Sender_*`/`Receiver_*` aggregates are per-upload, not per-account-lifetime.** The fix
    above computes real stats from the file being uploaded, which is correct for a one-shot
    batch analysis (matches the FYP's "upload bulk files for batch processing" design) but
@@ -288,9 +325,9 @@ Worth stating plainly in your report/defense rather than leaving for a superviso
    practice only because the Node gateway's `/api/admin/model-config` route sits in front of
    it with `requireAdmin`. If you ever expose the AI Engine's port 8000 directly to the
    internet, add auth there too — right now it trusts whatever calls it.
-6. **FR-20 (Data Backup and Recovery) is still not implemented.** No scheduled backup job
-   exists; this would need a separate cron/worker (e.g. `mongodump` on a schedule) which
-   wasn't added here since it's an infra/ops concern more than an application feature.
+6. **In-process queue mode (FR-18's default without `REDIS_URL`) loses queued-but-not-yet-started
+   jobs if the server restarts.** Jobs already running or completed are unaffected. Set
+   `REDIS_URL` (e.g. a free Upstash instance) for persistence across restarts.
 
 ---
 

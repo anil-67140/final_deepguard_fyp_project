@@ -79,6 +79,16 @@ export const adminAPI = {
   updateModelConfig: (payload) => api.patch('/admin/model-config', payload),
   // FR-15: System Logs
   getLogs: (params) => api.get('/admin/logs', { params }),
+  // FR-18: Bulk Processing Queue
+  getQueueStatus: () => api.get('/admin/queue/status'),
+  // FR-20: Data Backup & Recovery
+  getBackups:     () => api.get('/admin/backups'),
+  runBackup:      () => api.post('/admin/backups/run'),
+  restoreBackup:  (name) => api.post(`/admin/backups/${encodeURIComponent(name)}/restore`),
+  deleteBackup:   (name) => api.delete(`/admin/backups/${encodeURIComponent(name)}`),
+  downloadBackup: (name) => api.get(`/admin/backups/${encodeURIComponent(name)}/download`, { responseType: 'blob' }),
+  // GNN
+  getGnnStatus: () => api.get('/admin/gnn/status'),
 }
 
 export default api
