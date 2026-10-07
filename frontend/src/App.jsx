@@ -10,6 +10,7 @@ import UploadPage     from './pages/UploadPage'
 import AnalysisPage   from './pages/AnalysisPage'
 import GraphPage      from './pages/GraphPage'
 import ReportsPage    from './pages/ReportsPage'
+import PerformancePage from './pages/PerformancePage'
 import AdminPage      from './pages/AdminPage'
 import Layout         from './components/Layout'
 
@@ -56,6 +57,7 @@ export default function App() {
         <Route path="analysis/:jobId" element={<AnalysisPage />} />
         <Route path="graph/:transactionId" element={<GraphPage />} />
         <Route path="reports"   element={<ReportsPage />} />
+        <Route path="performance" element={<PerformancePage />} />
         <Route path="admin"     element={
           <ProtectedRoute adminOnly><AdminPage /></ProtectedRoute>
         } />

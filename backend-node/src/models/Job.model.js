@@ -24,6 +24,8 @@ const JobSchema = new mongoose.Schema({
   saveWarning: { type: String }, // set if Transaction.insertMany partially/fully failed after a successful AI analysis — see upload.controller.js
   usedGnn: { type: Boolean, default: false },      // true if the GNN also scored this job
   reportUrl: { type: String },
+  reportHash: { type: String },          // SHA-256 evidence fingerprint — FR-11
+  reportGeneratedAt: { type: Date },      // FR-11
   createdAt: { type: Date, default: Date.now },
   completedAt: { type: Date }
 }, { timestamps: true });

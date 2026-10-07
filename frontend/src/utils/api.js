@@ -60,10 +60,14 @@ export const graphAPI = {
 
 export const reportAPI = {
   generateReport: (jobId) => api.get(`/reports/generate/${jobId}`, { responseType: 'blob' }),
+  // FR-11: verify a report's evidence hash hasn't drifted since generation
+  verifyReport:   (jobId) => api.get(`/reports/verify/${jobId}`),
 }
 
 export const dashboardAPI = {
   getOverview: () => api.get('/dashboard/overview'),
+  // FR-12: model accuracy + system/processing-time analytics
+  getPerformance: () => api.get('/dashboard/performance'),
 }
 
 export const adminAPI = {

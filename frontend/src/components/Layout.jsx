@@ -4,14 +4,15 @@ import { supabase } from '../utils/api'
 import { clearUser } from '../store'
 import toast from 'react-hot-toast'
 import {
-  LayoutDashboard, Upload, BarChart3, GitBranch,
+  LayoutDashboard, Upload, BarChart3, GitBranch, Gauge,
   FileText, Settings, LogOut, Shield, ChevronRight
 } from 'lucide-react'
 
 const NAV_ITEMS = [
-  { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/upload',    icon: Upload,           label: 'Upload File' },
-  { to: '/reports',   icon: FileText,         label: 'Reports' },
+  { to: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/upload',       icon: Upload,           label: 'Upload File' },
+  { to: '/reports',      icon: FileText,         label: 'Reports' },
+  { to: '/performance',  icon: Gauge,            label: 'Performance' }, // FR-12
 ]
 
 const ADMIN_ITEMS = [
