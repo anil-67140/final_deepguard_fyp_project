@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { adminAPI } from '../utils/api'
 import toast from 'react-hot-toast'
 import {
@@ -16,6 +16,38 @@ const TABS = [
   { id: 'backups',  label: 'Backups',    icon: Database },
   { id: 'logs',     label: 'System Logs', icon: ScrollText },
 ]
+
+// Catches any render-time crash in whatever tab is currently showing (e.g. an
+// API response in an unexpected shape) and shows the actual error instead of
+// a silent blank page — React unmounts the WHOLE surrounding tree on an
+// uncaught render error by default, and without this boundary one tab's bug
+// could blank out the tab bar too, making it look like the entire Admin
+// panel (not just that tab) had simply vanished. `resetKey` forces a fresh
+// mount (another chance to render) when the admin switches tabs.
+class TabErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null } }
+  static getDerivedStateFromError(error) { return { error } }
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null })
+    }
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="card border border-red-800/40">
+          <p className="text-sm text-red-300 font-semibold mb-1">This tab couldn't render</p>
+          <p className="text-xs text-red-400 font-mono mb-2">{this.state.error.message}</p>
+          <p className="text-xs text-slate-500">
+            Usually means the backend returned something unexpected (check the Node
+            console for the actual API response). Other tabs are unaffected.
+          </p>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 export default function AdminPage() {
   const [tab, setTab] = useState('overview')
@@ -38,12 +70,14 @@ export default function AdminPage() {
         ))}
       </div>
 
-      {tab === 'overview' && <OverviewTab />}
-      {tab === 'users'    && <UsersTab />}
-      {tab === 'models'   && <ModelsTab />}
-      {tab === 'queue'    && <QueueTab />}
-      {tab === 'backups'  && <BackupsTab />}
-      {tab === 'logs'     && <LogsTab />}
+      <TabErrorBoundary resetKey={tab}>
+        {tab === 'overview' && <OverviewTab />}
+        {tab === 'users'    && <UsersTab />}
+        {tab === 'models'   && <ModelsTab />}
+        {tab === 'queue'    && <QueueTab />}
+        {tab === 'backups'  && <BackupsTab />}
+        {tab === 'logs'     && <LogsTab />}
+      </TabErrorBoundary>
     </div>
   )
 }
@@ -58,7 +92,7 @@ function OverviewTab() {
 
   useEffect(() => {
     Promise.all([adminAPI.getStats(), adminAPI.getAllJobs()])
-      .then(([s, j]) => { setStats(s.data); setJobs(j.data || []) })
+      .then(([s, j]) => { setStats(s.data); setJobs(Array.isArray(j.data) ? j.data : []) })
       .catch(() => { setStats(MOCK_STATS); setJobs(MOCK_JOBS) })
       .finally(() => setLoading(false))
   }, [])
@@ -138,7 +172,7 @@ function UsersTab() {
   const load = () => {
     setLoading(true)
     adminAPI.getUsers()
-      .then(r => { setUsers(r.data || []); setError(null) })
+      .then(r => { setUsers(Array.isArray(r.data) ? r.data : []); setError(null) })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
   }
@@ -601,8 +635,16 @@ function BackupsTab() {
   const [busyName, setBusyName] = useState(null)
   const [error, setError] = useState(null)
 
-  const load = () => adminAPI.getBackups().then(r => { setBackups(r.data); setError(null) }).catch(e => setError(e.message)).finally(() => setLoading(false))
-  useEffect(load, [])
+  // NOTE: must not be `useEffect(load, [])` with `load` as a single-expression
+  // arrow function — that returns the promise chain itself, and React treats
+  // whatever a useEffect callback returns as its cleanup function. Calling a
+  // Promise as if it were a function throws "destroy is not a function" —
+  // most visibly under React.StrictMode (main.jsx), which deliberately
+  // mounts/unmounts/remounts once in development to catch bugs like this one.
+  // Wrapping in a block-bodied effect fixes it: the effect now returns
+  // undefined, as useEffect requires.
+  const load = () => adminAPI.getBackups().then(r => { setBackups(Array.isArray(r.data) ? r.data : []); setError(null) }).catch(e => setError(e.message)).finally(() => setLoading(false))
+  useEffect(() => { load() }, [])
 
   const handleRun = async () => {
     setRunning(true)
@@ -722,7 +764,7 @@ function LogsTab() {
   useEffect(() => {
     setLoading(true)
     adminAPI.getLogs({ status: statusFilter || undefined })
-      .then(r => setLogs(r.data.logs || []))
+      .then(r => setLogs(Array.isArray(r.data?.logs) ? r.data.logs : []))
       .catch(() => setLogs([]))
       .finally(() => setLoading(false))
   }, [statusFilter])
