@@ -2,12 +2,11 @@ import { useEffect, useState } from 'react'
 import { dashboardAPI } from '../utils/api'
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, Cell
+  CartesianGrid, Legend
 } from 'recharts'
 import {
   Gauge, Clock, Database, Cpu, Loader2, Info, Network, Target
 } from 'lucide-react'
-import { formatDistanceToNow } from 'date-fns'
 
 /**
  * FR-12 — View Performance Analytics.
@@ -41,7 +40,41 @@ function StatCard({ icon: Icon, label, value, sub, color = 'sky' }) {
   )
 }
 
-const MODEL_COLORS = { 'Isolation Forest': '#64748b', 'Autoencoder': '#f59e0b', 'XGBoost': '#22c55e', 'Ensemble': '#38bdf8' }
+// Display name + sort order for the known model keys. Anything not listed here
+// still renders (title-cased from its raw key), just appended after these.
+const MODEL_DISPLAY = {
+  isolation_forest: { label: 'Isolation Forest', order: 1 },
+  autoencoder:       { label: 'Autoencoder',      order: 2 },
+  xgboost:           { label: 'XGBoost',          order: 3 },
+  ensemble:          { label: 'Ensemble',         order: 4 },
+}
+
+/**
+ * model_metadata.json stores performance as FLAT scalar keys, e.g.
+ *   { isolation_forest_roc_auc: 0.712, isolation_forest_avg_prec: 0.002,
+ *     autoencoder_roc_auc: 0.535, ..., xgboost_roc_auc: 0.984, ...,
+ *     ensemble_roc_auc: 0.930, ensemble_avg_prec: 0.401, ensemble_f1: 0.4558 }
+ * — NOT nested per-model objects. This groups those flat keys back into one
+ * row per model so they can be charted and read as a table.
+ */
+function buildModelRows(perf) {
+  const byModel = {}
+  for (const [key, value] of Object.entries(perf || {})) {
+    if (typeof value !== 'number') continue
+    const m = key.match(/^(.+)_(roc_auc|avg_prec|f1)$/)
+    if (!m) continue
+    const [, modelKey, metric] = m
+    const display = MODEL_DISPLAY[modelKey] || {
+      label: modelKey.split('_').map(w => w[0].toUpperCase() + w.slice(1)).join(' '),
+      order: 99
+    }
+    if (!byModel[modelKey]) byModel[modelKey] = { name: display.label, order: display.order }
+    if (metric === 'roc_auc') byModel[modelKey].rocAuc = value
+    if (metric === 'avg_prec') byModel[modelKey].avgPrecision = value
+    if (metric === 'f1') byModel[modelKey].f1 = value
+  }
+  return Object.values(byModel).sort((a, b) => a.order - b.order)
+}
 
 export default function PerformancePage() {
   const [data, setData] = useState(null)
@@ -74,11 +107,8 @@ export default function PerformancePage() {
   const sys = data?.systemStats || {}
 
   // Model comparison bars (ROC-AUC + Average Precision per model)
-  const modelRows = Object.entries(perf).map(([name, m]) => ({
-    name,
-    rocAuc: m.roc_auc ?? m.roc_auc_score ?? 0,
-    avgPrecision: m.avg_precision ?? m.average_precision ?? 0
-  }))
+  const modelRows = buildModelRows(perf)
+  const ensembleF1 = modelRows.find(r => r.name === 'Ensemble')?.f1
 
   const shapRows = Object.entries(shap)
     .sort((a, b) => b[1] - a[1])
@@ -121,12 +151,18 @@ export default function PerformancePage() {
 
       {/* Model performance */}
       <div className="card">
-        <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
           <h3 className="text-sm font-semibold text-white">Model Performance (ROC-AUC vs Average Precision)</h3>
+          {ensembleF1 != null && (
+            <span className="text-xs text-slate-400">
+              Ensemble F1: <span className="font-semibold text-slate-200">{ensembleF1.toFixed(3)}</span>
+            </span>
+          )}
         </div>
         <p className="text-xs text-slate-500 mb-4">
           Average Precision is the more meaningful metric here — fraud is ~0.1% of transactions in this dataset, which
-          makes F1/accuracy alone misleading even for a genuinely strong model.
+          makes F1/accuracy alone misleading even for a genuinely strong model (ROC-AUC 0.93 here vs. F1{' '}
+          {ensembleF1 != null ? ensembleF1.toFixed(3) : '0.456'} at that imbalance is expected, not a weak result).
         </p>
         {modelRows.length > 0 ? (
           <ResponsiveContainer width="100%" height={240}>
@@ -135,9 +171,9 @@ export default function PerformancePage() {
               <XAxis type="number" domain={[0, 1]} tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} />
               <YAxis type="category" dataKey="name" tick={{ fill: '#cbd5e1', fontSize: 11 }} axisLine={false} tickLine={false} width={110} />
               <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }} />
-              <Bar dataKey="rocAuc" name="ROC-AUC" radius={[0, 4, 4, 0]}>
-                {modelRows.map((r, i) => <Cell key={i} fill={MODEL_COLORS[r.name] || '#38bdf8'} />)}
-              </Bar>
+              <Legend formatter={(v) => <span style={{ color: '#94a3b8', fontSize: 11 }}>{v}</span>} />
+              <Bar dataKey="rocAuc" name="ROC-AUC" fill="#38bdf8" radius={[0, 4, 4, 0]} />
+              <Bar dataKey="avgPrecision" name="Avg. Precision" fill="#a78bfa" radius={[0, 4, 4, 0]} />
             </BarChart>
           </ResponsiveContainer>
         ) : (
@@ -209,10 +245,10 @@ const MOCK_PERFORMANCE = {
   modelAvailable: false,
   gnnAvailable: false,
   modelPerformance: {
-    'Isolation Forest': { roc_auc: 0.712, avg_precision: 0.002 },
-    'Autoencoder': { roc_auc: 0.535, avg_precision: 0.001 },
-    'XGBoost': { roc_auc: 0.984, avg_precision: 0.440 },
-    'Ensemble': { roc_auc: 0.930, avg_precision: 0.401 }
+    isolation_forest_roc_auc: 0.712, isolation_forest_avg_prec: 0.002,
+    autoencoder_roc_auc: 0.535, autoencoder_avg_prec: 0.001,
+    xgboost_roc_auc: 0.984, xgboost_avg_prec: 0.440,
+    ensemble_roc_auc: 0.930, ensemble_avg_prec: 0.401, ensemble_f1: 0.4558
   },
   shapFeatureImportance: {
     amount_paid_log: 0.312, sender_total_amount: 0.221, same_currency: 0.158,
