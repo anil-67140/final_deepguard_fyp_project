@@ -1,0 +1,11 @@
+Autoencoder  (threshold = 0.333333)
+
+              precision    recall  f1-score   support
+
+      Normal     0.9990    0.9829    0.9909   1014634
+       Fraud     0.0017    0.0290    0.0033      1035
+
+    accuracy                         0.9820   1015669
+   macro avg     0.5004    0.5060    0.4971   1015669
+weighted avg     0.9980    0.9820    0.9899   1015669
+

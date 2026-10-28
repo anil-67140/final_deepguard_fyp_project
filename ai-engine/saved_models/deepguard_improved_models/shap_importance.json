@@ -1,0 +1,23 @@
+{
+  "Payment Format_enc": 2.750380039215088,
+  "Amount Received": 1.4612023830413818,
+  "Sender_Unique_Receivers": 1.3665777444839478,
+  "Amount Paid": 1.3572698831558228,
+  "Log_Amount_Recv": 1.2330658435821533,
+  "Log_Amount_Paid": 1.0842996835708618,
+  "Sender_TX_Count": 1.0257446765899658,
+  "Receiver_TX_Count": 0.6985962390899658,
+  "Sender_Total_Amount": 0.4148675203323364,
+  "Hour": 0.3987351953983307,
+  "Sender_Avg_Amount": 0.26886212825775146,
+  "Payment Currency_enc": 0.26599541306495667,
+  "Sender_Max_Amount": 0.2522350549697876,
+  "DayOfWeek": 0.24344484508037567,
+  "Receiving Currency_enc": 0.18324661254882812,
+  "Amount_Ratio": 0.08371418714523315,
+  "IsNightTx": 0.025474436581134796,
+  "IsWeekend": 0.007186552509665489,
+  "Amount_Diff": 0.0,
+  "Is_Round_Amount": 0.0,
+  "Month": 0.0
+}

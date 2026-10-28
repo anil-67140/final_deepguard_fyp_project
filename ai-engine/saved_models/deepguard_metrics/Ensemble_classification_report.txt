@@ -1,0 +1,11 @@
+Ensemble  (threshold = 0.295430)
+
+              precision    recall  f1-score   support
+
+      Normal     0.9993    0.9999    0.9996   1014634
+       Fraud     0.7073    0.3362    0.4558      1035
+
+    accuracy                         0.9992   1015669
+   macro avg     0.8533    0.6680    0.7277   1015669
+weighted avg     0.9990    0.9992    0.9990   1015669
+

@@ -1,0 +1,11 @@
+Isolation Forest  (threshold = 0.215852)
+
+              precision    recall  f1-score   support
+
+      Normal     0.9993    0.7911    0.8831   1014634
+       Fraud     0.0021    0.4309    0.0042      1035
+
+    accuracy                         0.7907   1015669
+   macro avg     0.5007    0.6110    0.4436   1015669
+weighted avg     0.9983    0.7907    0.8822   1015669
+

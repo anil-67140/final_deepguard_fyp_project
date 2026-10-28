@@ -1,0 +1,310 @@
+{
+  "ae_threshold": 0.0037717405380714416,
+  "ensemble_threshold": 0.2954295613330108,
+  "feature_cols": [
+    "Amount Paid",
+    "Amount Received",
+    "Amount_Ratio",
+    "Amount_Diff",
+    "Log_Amount_Paid",
+    "Log_Amount_Recv",
+    "Is_Round_Amount",
+    "Hour",
+    "DayOfWeek",
+    "Month",
+    "IsWeekend",
+    "IsNightTx",
+    "Payment Format_enc",
+    "Payment Currency_enc",
+    "Receiving Currency_enc",
+    "Sender_TX_Count",
+    "Sender_Avg_Amount",
+    "Sender_Unique_Receivers",
+    "Sender_Total_Amount",
+    "Sender_Max_Amount",
+    "Receiver_TX_Count"
+  ],
+  "n_features": 21,
+  "ensemble_type": "weighted_average (validation-tuned, no test leakage)",
+  "ensemble_weights": {
+    "xgboost": 0.8500000000000003,
+    "autoencoder": 0.0,
+    "isolation_forest": 0.1499999999999997
+  },
+  "if_decision_function_range": {
+    "min": -0.09040983809968406,
+    "max": 0.3697203709207584
+  },
+  "model_performance": {
+    "isolation_forest_roc_auc": 0.7123,
+    "autoencoder_roc_auc": 0.451,
+    "xgboost_roc_auc": 0.9838,
+    "ensemble_roc_auc": 0.9297,
+    "isolation_forest_avg_prec": 0.0019,
+    "autoencoder_avg_prec": 0.001,
+    "xgboost_avg_prec": 0.4397,
+    "ensemble_avg_prec": 0.4014,
+    "ensemble_f1": 0.4558
+  },
+  "baseline_performance_for_comparison": {
+    "isolation_forest_roc_auc": 0.836,
+    "isolation_forest_avg_prec": 0.0127,
+    "autoencoder_roc_auc": 0.8682,
+    "autoencoder_avg_prec": 0.0893,
+    "ensemble_roc_auc": 0.9087,
+    "ensemble_avg_prec": 0.0534
+  },
+  "shap_feature_importance": {
+    "Payment Format_enc": 2.750380039215088,
+    "Amount Received": 1.4612023830413818,
+    "Sender_Unique_Receivers": 1.3665777444839478,
+    "Amount Paid": 1.3572698831558228,
+    "Log_Amount_Recv": 1.2330658435821533,
+    "Log_Amount_Paid": 1.0842996835708618,
+    "Sender_TX_Count": 1.0257446765899658,
+    "Receiver_TX_Count": 0.6985962390899658,
+    "Sender_Total_Amount": 0.4148675203323364,
+    "Hour": 0.3987351953983307,
+    "Sender_Avg_Amount": 0.26886212825775146,
+    "Payment Currency_enc": 0.26599541306495667,
+    "Sender_Max_Amount": 0.2522350549697876,
+    "DayOfWeek": 0.24344484508037567,
+    "Receiving Currency_enc": 0.18324661254882812,
+    "Amount_Ratio": 0.08371418714523315,
+    "IsNightTx": 0.025474436581134796,
+    "IsWeekend": 0.007186552509665489,
+    "Amount_Diff": 0.0,
+    "Is_Round_Amount": 0.0,
+    "Month": 0.0
+  },
+  "full_test_metrics": {
+    "Isolation Forest": {
+      "threshold": 0.2158521410489842,
+      "accuracy": 0.7906955907879437,
+      "balanced_accuracy": 0.6109902322266199,
+      "precision": 0.0020994064234305053,
+      "recall_sensitivity": 0.43091787439613527,
+      "specificity": 0.7910625900571043,
+      "f1": 0.00417845565777886,
+      "f2": 0.010296378722048563,
+      "f0_5": 0.0026210656100912203,
+      "false_positive_rate": 0.20893740994289567,
+      "false_negative_rate": 0.5690821256038647,
+      "npv": 0.9992667088298715,
+      "mcc": 0.017414100563182332,
+      "cohen_kappa": 0.002154641311047145,
+      "roc_auc": 0.7123384368989616,
+      "avg_precision": 0.0018781212121815182,
+      "precision_at_top_1pct": 0.0023631350925561244,
+      "recall_at_top_1pct": 0.02318840579710145,
+      "log_loss": 0.1798520941902526,
+      "brier_score": 0.04032872412849086,
+      "TN": 802639,
+      "FP": 211995,
+      "FN": 589,
+      "TP": 446,
+      "n_samples": 1015669,
+      "n_fraud": 1035,
+      "n_flagged": 212441,
+      "flagged_rate_pct": 20.916361531168125,
+      "classification_report": {
+        "Normal": {
+          "precision": 0.9992667088298715,
+          "recall": 0.7910625900571043,
+          "f1-score": 0.8830582299426469,
+          "support": 1014634.0
+        },
+        "Fraud": {
+          "precision": 0.0020994064234305053,
+          "recall": 0.43091787439613527,
+          "f1-score": 0.00417845565777886,
+          "support": 1035.0
+        },
+        "accuracy": 0.7906955907879437,
+        "macro avg": {
+          "precision": 0.500683057626651,
+          "recall": 0.6109902322266199,
+          "f1-score": 0.4436183428002129,
+          "support": 1015669.0
+        },
+        "weighted avg": {
+          "precision": 0.9982505626661206,
+          "recall": 0.7906955907879437,
+          "f1-score": 0.882162622646978,
+          "support": 1015669.0
+        }
+      }
+    },
+    "Autoencoder": {
+      "threshold": 0.3333333333333333,
+      "accuracy": 0.9819744424610773,
+      "balanced_accuracy": 0.505966033643373,
+      "precision": 0.001730802515432989,
+      "recall_sensitivity": 0.028985507246376812,
+      "specificity": 0.9829465600403693,
+      "f1": 0.0032665505226480837,
+      "f2": 0.006985516695384902,
+      "f0_5": 0.002131681043671039,
+      "false_positive_rate": 0.017053439959630764,
+      "false_negative_rate": 0.9710144927536232,
+      "npv": 0.9989933248926213,
+      "mcc": 0.0029394450083444408,
+      "cohen_kappa": 0.0013459143780204519,
+      "roc_auc": 0.45098906657938737,
+      "avg_precision": 0.0009597155515827223,
+      "precision_at_top_1pct": 0.0020677432059866088,
+      "recall_at_top_1pct": 0.020289855072463767,
+      "log_loss": 0.08314550211777207,
+      "brier_score": 0.011160086270140578,
+      "TN": 997331,
+      "FP": 17303,
+      "FN": 1005,
+      "TP": 30,
+      "n_samples": 1015669,
+      "n_fraud": 1035,
+      "n_flagged": 17333,
+      "flagged_rate_pct": 1.7065599127274733,
+      "classification_report": {
+        "Normal": {
+          "precision": 0.9989933248926213,
+          "recall": 0.9829465600403693,
+          "f1-score": 0.9909049811969378,
+          "support": 1014634.0
+        },
+        "Fraud": {
+          "precision": 0.001730802515432989,
+          "recall": 0.028985507246376812,
+          "f1-score": 0.0032665505226480837,
+          "support": 1035.0
+        },
+        "accuracy": 0.9819744424610773,
+        "macro avg": {
+          "precision": 0.5003620637040271,
+          "recall": 0.505966033643373,
+          "f1-score": 0.49708576585979297,
+          "support": 1015669.0
+        },
+        "weighted avg": {
+          "precision": 0.9979770816965993,
+          "recall": 0.9819744424610773,
+          "f1-score": 0.989898545265795,
+          "support": 1015669.0
+        }
+      }
+    },
+    "XGBoost": {
+      "threshold": 0.29854851961135864,
+      "accuracy": 0.9991798509159973,
+      "balanced_accuracy": 0.6704569898977589,
+      "precision": 0.7003968253968254,
+      "recall_sensitivity": 0.34106280193236715,
+      "specificity": 0.9998511778631507,
+      "f1": 0.4587394411955815,
+      "f2": 0.3800602928509905,
+      "f0_5": 0.578498852835136,
+      "false_positive_rate": 0.00014882213684934667,
+      "false_negative_rate": 0.6589371980676328,
+      "npv": 0.9993281880285471,
+      "mcc": 0.488411751588059,
+      "cohen_kappa": 0.45837794277242183,
+      "roc_auc": 0.9838026013311537,
+      "avg_precision": 0.43968191020028696,
+      "precision_at_top_1pct": 0.07512800315084679,
+      "recall_at_top_1pct": 0.7371980676328502,
+      "log_loss": 0.0036818907209497944,
+      "brier_score": 0.0007112082007679958,
+      "TN": 1014483,
+      "FP": 151,
+      "FN": 682,
+      "TP": 353,
+      "n_samples": 1015669,
+      "n_fraud": 1035,
+      "n_flagged": 504,
+      "flagged_rate_pct": 0.04962246558672166,
+      "classification_report": {
+        "Normal": {
+          "precision": 0.9993281880285471,
+          "recall": 0.9998511778631507,
+          "f1-score": 0.9995896145381883,
+          "support": 1014634.0
+        },
+        "Fraud": {
+          "precision": 0.7003968253968254,
+          "recall": 0.34106280193236715,
+          "f1-score": 0.4587394411955815,
+          "support": 1035.0
+        },
+        "accuracy": 0.9991798509159973,
+        "macro avg": {
+          "precision": 0.8498625067126861,
+          "recall": 0.6704569898977589,
+          "f1-score": 0.7291645278668849,
+          "support": 1015669.0
+        },
+        "weighted avg": {
+          "precision": 0.9990235671724179,
+          "recall": 0.9991798509159973,
+          "f1-score": 0.9990384704849489,
+          "support": 1015669.0
+        }
+      }
+    },
+    "Ensemble": {
+      "threshold": 0.2954295613330108,
+      "accuracy": 0.9991818200614571,
+      "balanced_accuracy": 0.668044980480289,
+      "precision": 0.7073170731707317,
+      "recall_sensitivity": 0.336231884057971,
+      "specificity": 0.9998580769026072,
+      "f1": 0.45579567779960706,
+      "f2": 0.3756476683937824,
+      "f0_5": 0.5794205794205795,
+      "false_positive_rate": 0.00014192309739275444,
+      "false_negative_rate": 0.663768115942029,
+      "npv": 0.9993232707202784,
+      "mcc": 0.4873343057814616,
+      "cohen_kappa": 0.45543808276434206,
+      "roc_auc": 0.9297093140908315,
+      "avg_precision": 0.4013819011080469,
+      "precision_at_top_1pct": 0.05513981882630957,
+      "recall_at_top_1pct": 0.5410628019323671,
+      "log_loss": 0.025662521655878477,
+      "brier_score": 0.001611410094597152,
+      "TN": 1014490,
+      "FP": 144,
+      "FN": 687,
+      "TP": 348,
+      "n_samples": 1015669,
+      "n_fraud": 1035,
+      "n_flagged": 492,
+      "flagged_rate_pct": 0.04844097831084734,
+      "classification_report": {
+        "Normal": {
+          "precision": 0.9993232707202784,
+          "recall": 0.9998580769026072,
+          "f1-score": 0.999590602277749,
+          "support": 1014634.0
+        },
+        "Fraud": {
+          "precision": 0.7073170731707317,
+          "recall": 0.336231884057971,
+          "f1-score": 0.45579567779960706,
+          "support": 1035.0
+        },
+        "accuracy": 0.9991818200614571,
+        "macro avg": {
+          "precision": 0.853320171945505,
+          "recall": 0.668044980480289,
+          "f1-score": 0.727693140038678,
+          "support": 1015669.0
+        },
+        "weighted avg": {
+          "precision": 0.9990257068343433,
+          "recall": 0.9991818200614571,
+          "f1-score": 0.9990364574265869,
+          "support": 1015669.0
+        }
+      }
+    }
+  }
+}

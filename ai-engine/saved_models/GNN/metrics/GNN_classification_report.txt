@@ -1,0 +1,11 @@
+GNN  (threshold = 0.962052)
+
+              precision    recall  f1-score   support
+
+      Normal     0.9995    0.9998    0.9997    760976
+       Fraud     0.7295    0.5039    0.5960       776
+
+    accuracy                         0.9993    761752
+   macro avg     0.8645    0.7518    0.7978    761752
+weighted avg     0.9992    0.9993    0.9992    761752
+
